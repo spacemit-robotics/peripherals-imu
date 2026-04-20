@@ -52,6 +52,18 @@ struct imu_dev;
 typedef void (*imu_callback_t)(struct imu_dev *dev,
         const struct imu_data *data, void *ctx);
 
+/*
+ * struct imu_spi_config - optional SPI transport configuration
+ * @mode:          SPI mode, default 0
+ * @bits_per_word: bits per word, default 8
+ * @speed_hz:      SPI clock, default 1000000
+ */
+struct imu_spi_config {
+    uint8_t mode;
+    uint8_t bits_per_word;
+    uint32_t speed_hz;
+};
+
 /* --- core API --- */
 
 int imu_init(struct imu_dev *dev, const struct imu_config *cfg);
