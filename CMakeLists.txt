@@ -58,7 +58,7 @@ install(FILES include/imu.h
 )
 
 # Optional: Create test executables
-option(BUILD_TESTS "Build test programs" OFF)
+option(BUILD_TESTS "Build test programs" ON)
 
 if(BUILD_TESTS)
     # Tests should rely on the normal driver selection mechanism:
