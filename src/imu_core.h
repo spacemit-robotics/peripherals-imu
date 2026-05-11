@@ -51,7 +51,7 @@ struct imu_ops {
 
 /* 4. 设备对象（私有实现，imu.h 中为不透明类型） */
 struct imu_dev {
-    const char *name; /* instance name */
+    char *name; /* instance name */
     struct imu_config config;
     const struct imu_ops *ops;
     void *priv_data;
@@ -91,4 +91,3 @@ struct imu_dev *imu_dev_alloc(const char *instance, size_t priv_size);
 void imu_apply_rotation_and_offset(struct imu_dev *dev, struct imu_data *data);
 
 #endif  /* IMU_CORE_H */
-

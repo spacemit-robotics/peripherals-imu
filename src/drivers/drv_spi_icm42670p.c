@@ -33,11 +33,14 @@
 #define ICM42670P_REG_MCLK_RDY           0x00U
 #define ICM42670P_REG_DEVICE_CONFIG      0x01U
 #define ICM42670P_REG_SIGNAL_PATH_RESET  0x02U
+#define ICM42670P_REG_INT_CONFIG1        0x05U
+#define ICM42670P_REG_INT_CONFIG         0x06U
 #define ICM42670P_REG_TEMP_DATA1         0x09U
 #define ICM42670P_REG_GYRO_CONFIG0       0x20U
 #define ICM42670P_REG_ACCEL_CONFIG0      0x21U
 #define ICM42670P_REG_GYRO_CONFIG1       0x23U
 #define ICM42670P_REG_ACCEL_CONFIG1      0x24U
+#define ICM42670P_REG_INT_SOURCE0        0x2BU
 #define ICM42670P_REG_PWR_MGMT0          0x1FU
 #define ICM42670P_REG_INTF_CONFIG0       0x35U
 #define ICM42670P_REG_WHO_AM_I           0x75U
@@ -48,6 +51,10 @@
 #define ICM42670P_SOFT_RESET_MASK        0x10U
 #define ICM42670P_SENSOR_DATA_BIG_ENDIAN 0x10U
 #define ICM42670P_PWR_6AXIS_LN_MODE      0x0FU
+#define ICM42670P_INT_ASYNC_RESET        0x10U
+#define ICM42670P_INT1_PUSH_PULL         0x02U
+#define ICM42670P_INT1_ACTIVE_HIGH       0x01U
+#define ICM42670P_DRDY_INT1_EN           0x08U
 
 #define ICM42670P_DATA_BURST_LEN         14U
 #define ICM42670P_GRAVITY_MPS2           9.80665f
@@ -379,6 +386,24 @@ static int16_t icm42670p_be16(const uint8_t *buf)
     return (int16_t)(((uint16_t)buf[0] << 8) | (uint16_t)buf[1]);
 }
 
+static int icm42670p_configure_drdy_int1(struct icm42670p_priv *priv)
+{
+    int ret;
+
+    ret = icm42670p_spi_write(priv, ICM42670P_REG_INT_CONFIG1,
+            ICM42670P_INT_ASYNC_RESET);
+    if (ret < 0)
+        return ret;
+
+    ret = icm42670p_spi_write(priv, ICM42670P_REG_INT_CONFIG,
+            ICM42670P_INT1_PUSH_PULL | ICM42670P_INT1_ACTIVE_HIGH);
+    if (ret < 0)
+        return ret;
+
+    return icm42670p_spi_write(priv, ICM42670P_REG_INT_SOURCE0,
+            ICM42670P_DRDY_INT1_EN);
+}
+
 static int icm42670p_init(struct imu_dev *dev)
 {
     struct icm42670p_priv *priv = dev->priv_data;
@@ -457,6 +482,14 @@ static int icm42670p_init(struct imu_dev *dev)
     if (ret < 0)
         goto err_out;
 
+    /*
+     * INT_SOURCE0 resets with RESET_DONE routed to INT1. Clear it during init
+     * so the external trigger line stays quiet until data-ready is enabled.
+     */
+    ret = icm42670p_spi_write(priv, ICM42670P_REG_INT_SOURCE0, 0x00U);
+    if (ret < 0)
+        goto err_out;
+
     ret = icm42670p_spi_write(priv, ICM42670P_REG_GYRO_CONFIG0, odr_reg);
     if (ret < 0)
         goto err_out;
@@ -481,7 +514,11 @@ static int icm42670p_init(struct imu_dev *dev)
 
     usleep(50000);
 
-    printf("[ICM42670P] ready, odr_code=0x%02X, dlpf_code=%s\n",
+    ret = icm42670p_configure_drdy_int1(priv);
+    if (ret < 0)
+        goto err_out;
+
+    printf("[ICM42670P] ready, odr_code=0x%02X, dlpf_code=%s, drdy=int1\n",
             odr_reg, (filter_reg == 0xFFU) ? "default" : "configured");
     return 0;
 
@@ -510,6 +547,7 @@ static int icm42670p_read(struct imu_dev *dev, struct imu_data *data)
     if (ret < 0)
         return ret;
 
+    data->timestamp_us = get_timestamp_us();
     temp_raw = icm42670p_be16(&raw[0]);
     accel_raw[0] = icm42670p_be16(&raw[2]);
     accel_raw[1] = icm42670p_be16(&raw[4]);
@@ -518,14 +556,13 @@ static int icm42670p_read(struct imu_dev *dev, struct imu_data *data)
     gyro_raw[1] = icm42670p_be16(&raw[10]);
     gyro_raw[2] = icm42670p_be16(&raw[12]);
 
-    data->timestamp_us = get_timestamp_us();
-    data->temp = ((float)temp_raw / 128.0f) + 25.0f;
-    data->acc[0] = ((float)accel_raw[0] / priv->accel_lsb_per_g) * ICM42670P_GRAVITY_MPS2;
-    data->acc[1] = ((float)accel_raw[1] / priv->accel_lsb_per_g) * ICM42670P_GRAVITY_MPS2;
-    data->acc[2] = ((float)accel_raw[2] / priv->accel_lsb_per_g) * ICM42670P_GRAVITY_MPS2;
-    data->gyro[0] = ((float)gyro_raw[0] / priv->gyro_lsb_per_dps) * ICM42670P_DEG_TO_RAD;
-    data->gyro[1] = ((float)gyro_raw[1] / priv->gyro_lsb_per_dps) * ICM42670P_DEG_TO_RAD;
-    data->gyro[2] = ((float)gyro_raw[2] / priv->gyro_lsb_per_dps) * ICM42670P_DEG_TO_RAD;
+    data->temp = (temp_raw / 128.0f) + 25.0f;
+    data->acc[0] = (accel_raw[0] / priv->accel_lsb_per_g) * ICM42670P_GRAVITY_MPS2;
+    data->acc[1] = (accel_raw[1] / priv->accel_lsb_per_g) * ICM42670P_GRAVITY_MPS2;
+    data->acc[2] = (accel_raw[2] / priv->accel_lsb_per_g) * ICM42670P_GRAVITY_MPS2;
+    data->gyro[0] = (gyro_raw[0] / priv->gyro_lsb_per_dps) * ICM42670P_DEG_TO_RAD;
+    data->gyro[1] = (gyro_raw[1] / priv->gyro_lsb_per_dps) * ICM42670P_DEG_TO_RAD;
+    data->gyro[2] = (gyro_raw[2] / priv->gyro_lsb_per_dps) * ICM42670P_DEG_TO_RAD;
 
     return 0;
 }
@@ -539,6 +576,13 @@ static void icm42670p_free(struct imu_dev *dev)
 
     priv = dev->priv_data;
     if (priv && priv->fd >= 0) {
+        int ret = icm42670p_spi_write(priv, ICM42670P_REG_INT_SOURCE0, 0x00U);
+
+        if (ret < 0) {
+            printf("[ICM42670P] disable INT1 on free failed: %s\n",
+                    strerror(-ret));
+        }
+
         close(priv->fd);
         priv->fd = -1;
     }
@@ -546,7 +590,7 @@ static void icm42670p_free(struct imu_dev *dev)
     if (dev->priv_data)
         free(dev->priv_data);
     if (dev->name)
-        free((void *)dev->name);
+        free(dev->name);
     free(dev);
 }
 
@@ -558,7 +602,7 @@ static const struct imu_ops icm42670p_ops = {
 
 static struct imu_dev *icm42670p_create(void *args)
 {
-    struct imu_args_spi *a = (struct imu_args_spi *)args;
+    struct imu_args_spi *a = args;
     const struct imu_spi_config *cfg;
     struct imu_dev *dev;
     struct icm42670p_priv *priv;

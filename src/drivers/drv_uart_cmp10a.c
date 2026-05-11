@@ -130,9 +130,9 @@ static int cmp10a_parse_frame(struct cmp10a_priv *priv, const uint8_t *frame)
         break;
 
     case CMP10A_TYPE_MAG:
-        priv->magnetometer[0] = (float)raw[0];
-        priv->magnetometer[1] = (float)raw[1];
-        priv->magnetometer[2] = (float)raw[2];
+        priv->magnetometer[0] = raw[0];
+        priv->magnetometer[1] = raw[1];
+        priv->magnetometer[2] = raw[2];
         break;
 
     default:
@@ -301,9 +301,9 @@ static int cmp10a_read(struct imu_dev *dev, struct imu_data *data)
     data->mag[2] = priv->magnetometer[2];
 
     /* convert angle to quaternion */
-    float roll_rad = priv->angle_degree[0] * (float)M_PI / 180.0f;
-    float pitch_rad = priv->angle_degree[1] * (float)M_PI / 180.0f;
-    float yaw_rad = priv->angle_degree[2] * (float)M_PI / 180.0f;
+    float roll_rad = priv->angle_degree[0] * M_PI / 180.0f;
+    float pitch_rad = priv->angle_degree[1] * M_PI / 180.0f;
+    float yaw_rad = priv->angle_degree[2] * M_PI / 180.0f;
     euler_to_quaternion(roll_rad, pitch_rad, yaw_rad, data->quat);
 
     data->temp = 0.0f;  /* temperature not available in this protocol */
@@ -329,7 +329,7 @@ static void cmp10a_free(struct imu_dev *dev)
     if (dev->priv_data)
         free(dev->priv_data);
     if (dev->name)
-        free((void *)dev->name);
+        free(dev->name);
     free(dev);
 }
 
@@ -341,7 +341,7 @@ static const struct imu_ops cmp10a_ops = {
 
 static struct imu_dev *cmp10a_create(void *args)
 {
-    struct imu_args_uart *a = (struct imu_args_uart *)args;
+    struct imu_args_uart *a = args;
     struct imu_dev *dev;
     struct cmp10a_priv *priv;
 

@@ -27,7 +27,7 @@ static void print_usage(const char *prog)
     printf("Options:\n");
     printf("  -d <device>   SPI device path (default: /dev/spidev0.0)\n");
     printf("  -s <speed>    SPI clock in Hz (default: 1000000)\n");
-    printf("  -m <mode>     SPI mode 0..3 (default: 2)\n");
+    printf("  -m <mode>     SPI mode 0..3 (default: 0)\n");
     printf("  -r <rate>     Sensor ODR and print rate in Hz (default: 100)\n");
     printf("  -l <freq>     DLPF target frequency in Hz (default: 0, keep reset default)\n");
     printf("  -c <ms>       Calibration duration in ms (default: 0)\n");
@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
 {
     const char *dev_path = "/dev/spidev0.0";
     struct imu_spi_config spi_cfg = {
-        .mode = 2U,
+        .mode = 0U,
         .bits_per_word = 8U,
         .speed_hz = 1000000U,
     };
