@@ -58,6 +58,20 @@ ICM-42670-P SPI examples:
 ./test_imu_spi -d /dev/spidev0.0 -s 8000000 -r 200 -l 53 -c 3000
 ```
 
+If you copy the test program and `libimu.so` to another board, keep one of these layouts:
+
+```text
+./test_imu_spi
+./libimu.so
+```
+
+or:
+
+```text
+./bin/test_imu_spi
+./lib/libimu.so
+```
+
 Code example (integrate into your project):
 
 ```c
@@ -102,6 +116,7 @@ The current `drv_spi_icm42670p` driver uses 4-wire SPI, Mode 0, and 8-bit word l
 - Verify baud rate configuration is correct
 - For SPI devices, confirm `/dev/spidevX.Y` exists and the mode/frequency match the hardware wiring
 - Ensure driver is enabled via `SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS`
+- If the log shows `driver 'xxx' not found`, first verify the target board is loading the `libimu.so` from this build
 
 **Q: Data orientation is incorrect?**
 - Configure the sensor-to-body frame rotation matrix via `mounting_matrix`

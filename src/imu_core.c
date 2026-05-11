@@ -113,9 +113,9 @@ int imu_calibrate_gyro_bias(struct imu_dev *dev, uint32_t duration_ms)
     }
 
     if (valid_count > 0) {
-        dev->config.gyro_offset[0] = (float)(sum_gyro[0] / valid_count);
-        dev->config.gyro_offset[1] = (float)(sum_gyro[1] / valid_count);
-        dev->config.gyro_offset[2] = (float)(sum_gyro[2] / valid_count);
+        dev->config.gyro_offset[0] = sum_gyro[0] / valid_count;
+        dev->config.gyro_offset[1] = sum_gyro[1] / valid_count;
+        dev->config.gyro_offset[2] = sum_gyro[2] / valid_count;
         printf("calibration done, offsets: %.4f, %.4f, %.4f\n",
                 dev->config.gyro_offset[0], dev->config.gyro_offset[1],
                 dev->config.gyro_offset[2]);
@@ -138,7 +138,7 @@ void imu_free(struct imu_dev *dev)
     if (dev->priv_data)
         free(dev->priv_data);
     if (dev->name)
-        free((void *)dev->name);
+        free(dev->name);
     free(dev);
 }
 
@@ -181,6 +181,26 @@ struct imu_dev *imu_dev_alloc(const char *name, size_t priv_size)
 
 static struct driver_info *g_driver_list = NULL;
 
+static void dump_registered_drivers(void)
+{
+    struct driver_info *curr = g_driver_list;
+
+    printf("[IMU] registered drivers:");
+    if (!curr) {
+        printf(" (none)\n");
+        return;
+    }
+
+    while (curr) {
+        printf(" %s(type=%d)", curr->name ? curr->name : "(null)",
+                curr->type);
+        curr = curr->next;
+        if (curr)
+            printf(",");
+    }
+    printf("\n");
+}
+
 void imu_driver_register(struct driver_info *info)
 {
     if (!info)
@@ -197,12 +217,13 @@ static struct driver_info *find_driver(const char *name, enum imu_driver_type ty
             if (curr->type == type)
                 return curr;
             printf("[IMU] driver '%s' type mismatch (expected %d got %d)\n",
-                    name, (int)type, (int)curr->type);
+                    name, type, curr->type);
             return NULL;
         }
         curr = curr->next;
     }
     printf("[IMU] driver '%s' not found\n", name ? name : "(null)");
+    dump_registered_drivers();
     return NULL;
 }
 
@@ -219,7 +240,7 @@ static int split_driver_instance(const char *name, char *driver,
     if (!sep)
         return 0;
 
-    len = (size_t)(sep - name);
+    len = sep - name;
     if (len == 0 || len + 1 > driver_sz || !*(sep + 1))
         return -1;
 

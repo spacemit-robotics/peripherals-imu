@@ -71,7 +71,7 @@ static int read_int_from_file(const char *path, int *out_value)
     if (end == buf)
         return -EINVAL;
 
-    *out_value = (int)val;
+    *out_value = val;
     return 0;
 }
 
@@ -79,9 +79,14 @@ static int fill_axis_path(char *dst, size_t dst_sz, const char *device_dir,
         const char *axis)
 {
     int n;
+    size_t required;
 
     n = snprintf(dst, dst_sz, "%s/in_accel_%s_raw", device_dir, axis);
-    if (n < 0 || (size_t)n >= dst_sz)
+    if (n < 0)
+        return -EINVAL;
+
+    required = n;
+    if (required >= dst_sz)
         return -EINVAL;
 
     return 0;
@@ -91,6 +96,7 @@ static int resolve_device_dir(char *dst, size_t dst_sz, const char *dev_path,
         uint8_t device_index)
 {
     int n;
+    size_t required;
 
     if (dev_path && dev_path[0]) {
         if (strncmp(dev_path, IIO_SYSFS_ROOT "/", strlen(IIO_SYSFS_ROOT "/")) == 0) {
@@ -107,7 +113,11 @@ static int resolve_device_dir(char *dst, size_t dst_sz, const char *dev_path,
                 (unsigned int)device_index);
     }
 
-    if (n < 0 || (size_t)n >= dst_sz)
+    if (n < 0)
+        return -EINVAL;
+
+    required = n;
+    if (required >= dst_sz)
         return -EINVAL;
 
     return 0;
@@ -159,9 +169,9 @@ static int mxc4005_read(struct imu_dev *dev, struct imu_data *data)
         return ret;
 
     data->timestamp_us = get_timestamp_us();
-    data->acc[0] = (float)raw_x;
-    data->acc[1] = (float)raw_y;
-    data->acc[2] = (float)raw_z;
+    data->acc[0] = raw_x;
+    data->acc[1] = raw_y;
+    data->acc[2] = raw_z;
 
     return 0;
 }
@@ -176,7 +186,7 @@ static void mxc4005_free(struct imu_dev *dev)
     if (dev->priv_data)
         free(dev->priv_data);
     if (dev->name)
-        free((void *)dev->name);
+        free(dev->name);
     free(dev);
 }
 
@@ -188,7 +198,7 @@ static const struct imu_ops mxc4005_ops = {
 
 static struct imu_dev *mxc4005_create(void *args)
 {
-    struct imu_args_i2c *a = (struct imu_args_i2c *)args;
+    struct imu_args_i2c *a = args;
     struct imu_dev *dev;
     struct mxc4005_priv *priv;
 

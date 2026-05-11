@@ -46,6 +46,16 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     )
 endif()
 
+# Allow copied binaries to find libimu.so both next to the executable and in ../lib.
+set(_IMU_RUNTIME_RPATH "$ORIGIN;$ORIGIN/../lib")
+
+function(_imu_set_runtime_rpath target)
+    set_target_properties(${target} PROPERTIES
+        BUILD_RPATH "${_IMU_RUNTIME_RPATH}"
+        INSTALL_RPATH "${_IMU_RUNTIME_RPATH}"
+    )
+endfunction()
+
 # Install rules
 install(TARGETS imu
     EXPORT ${SROBOTIS_EXPORT_SET}
@@ -61,20 +71,27 @@ install(FILES include/imu.h
 option(BUILD_TESTS "Build test programs" ON)
 
 if(BUILD_TESTS)
-    # Tests should rely on the normal driver selection mechanism:
-    # enable drivers via SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS.
-    add_executable(test_imu_uart test/test_imu_uart.c)
-    target_link_libraries(test_imu_uart imu)
-    set_target_properties(test_imu_uart PROPERTIES BUILD_RPATH "$ORIGIN/../lib")
-    install(TARGETS test_imu_uart RUNTIME DESTINATION bin)
+    list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS "drv_uart_cmp10a" _imu_uart_idx)
+    if(_imu_uart_idx GREATER -1)
+        add_executable(test_imu_uart test/test_imu_uart.c)
+        target_link_libraries(test_imu_uart imu)
+        _imu_set_runtime_rpath(test_imu_uart)
+        install(TARGETS test_imu_uart RUNTIME DESTINATION bin)
+    endif()
 
-    add_executable(test_imu_i2c test/test_imu_i2c.c)
-    target_link_libraries(test_imu_i2c imu)
-    set_target_properties(test_imu_i2c PROPERTIES BUILD_RPATH "$ORIGIN/../lib")
-    install(TARGETS test_imu_i2c RUNTIME DESTINATION bin)
+    list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS "drv_i2c_mxc4005" _imu_i2c_idx)
+    if(_imu_i2c_idx GREATER -1)
+        add_executable(test_imu_i2c test/test_imu_i2c.c)
+        target_link_libraries(test_imu_i2c imu)
+        _imu_set_runtime_rpath(test_imu_i2c)
+        install(TARGETS test_imu_i2c RUNTIME DESTINATION bin)
+    endif()
 
-    add_executable(test_imu_spi test/test_imu_spi.c)
-    target_link_libraries(test_imu_spi imu)
-    set_target_properties(test_imu_spi PROPERTIES BUILD_RPATH "$ORIGIN/../lib")
-    install(TARGETS test_imu_spi RUNTIME DESTINATION bin)
+    list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS "drv_spi_icm42670p" _imu_spi_idx)
+    if(_imu_spi_idx GREATER -1)
+        add_executable(test_imu_spi test/test_imu_spi.c)
+        target_link_libraries(test_imu_spi imu)
+        _imu_set_runtime_rpath(test_imu_spi)
+        install(TARGETS test_imu_spi RUNTIME DESTINATION bin)
+    endif()
 endif()
