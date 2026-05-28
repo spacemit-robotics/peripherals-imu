@@ -1,0 +1,54 @@
+## Copyright (C) 2026 SpacemiT (Hangzhou) Technology Co. Ltd.
+## SPDX-License-Identifier: Apache-2.0
+
+module: components/peripherals/imu
+
+tests:
+  - name: imu-api-contract
+    description: >-
+      Builds imu core with fake I2C/SPI/UART drivers and verifies transport
+      allocation, default and custom configuration, coordinate transform,
+      bias compensation and gyro calibration without requiring hardware.
+    category: functional
+    scopes: [pr]
+    timeout_s: 900
+    workdir: sdk
+    artifacts:
+      - output/test/pr/components__peripherals__imu/modules/components__peripherals__imu/logs/imu_api_contract.log
+    command: |
+      bash components/peripherals/imu/tests/test_api_contract.sh
+
+  - name: imu-error-paths
+    description: >-
+      Builds imu core with fake drivers and verifies invalid arguments,
+      malformed driver names, driver type mismatches, init failures and read
+      failures return explicit errors instead of succeeding silently.
+    category: functional
+    scopes: [pr]
+    timeout_s: 900
+    workdir: sdk
+    artifacts:
+      - output/test/pr/components__peripherals__imu/modules/components__peripherals__imu/logs/imu_error_paths.log
+    command: |
+      bash components/peripherals/imu/tests/test_error_paths.sh
+
+  - name: imu-uart-hardware-smoke
+    description: >-
+      Manually verifies the CMP10A UART IMU test binary can initialize a real
+      sensor, receive the requested number of samples and emit live data on the
+      selected serial port.
+    category: functional
+    scopes: [manual]
+    timeout_s: 1200
+    workdir: sdk
+    requires:
+      hardware:
+        - >-
+          CMP10A-compatible UART IMU connected to the target board, with
+          IMU_TEST_DEV_PATH exported before running the test and optional
+          IMU_TEST_BAUD, IMU_TEST_RATE, IMU_TEST_SAMPLES overrides.
+      supervision: true
+    artifacts:
+      - output/test/manual/components__peripherals__imu/modules/components__peripherals__imu/logs/imu_uart_hardware_smoke.log
+    command: |
+      bash components/peripherals/imu/tests/test_hw_uart_smoke.sh
