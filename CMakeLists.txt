@@ -72,7 +72,9 @@ option(BUILD_TESTS "Build test programs" ON)
 
 if(BUILD_TESTS)
     list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS "drv_uart_cmp10a" _imu_uart_idx)
-    if(_imu_uart_idx GREATER -1)
+    list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS
+        "drv_uart_forsense" _imu_forsense_idx)
+    if(_imu_uart_idx GREATER -1 OR _imu_forsense_idx GREATER -1)
         add_executable(test_imu_uart test/test_imu_uart.c)
         target_link_libraries(test_imu_uart imu)
         _imu_set_runtime_rpath(test_imu_uart)

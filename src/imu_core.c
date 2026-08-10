@@ -1,8 +1,12 @@
-/*
+/**
  * Copyright (C) 2026 SpacemiT (Hangzhou) Technology Co. Ltd.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * @file imu_core.c
+ * @brief IMU registry, mounting transform, and calibration implementation.
  */
 #include "imu_core.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -17,9 +21,85 @@ static void mat3_mult_vec3(const float R[9], const float in[3], float out[3])
     out[2] = R[6] * in[0] + R[7] * in[1] + R[8] * in[2];
 }
 
+static void mat3_to_quat(const float R[9], float quat[4])
+{
+    float scale;
+    float trace = R[0] + R[4] + R[8];
+
+    if (trace > 0.0f) {
+        scale = 2.0f * sqrtf(trace + 1.0f);
+        quat[0] = 0.25f * scale;
+        quat[1] = (R[7] - R[5]) / scale;
+        quat[2] = (R[2] - R[6]) / scale;
+        quat[3] = (R[3] - R[1]) / scale;
+    } else if (R[0] > R[4] && R[0] > R[8]) {
+        scale = 2.0f * sqrtf(1.0f + R[0] - R[4] - R[8]);
+        quat[0] = (R[7] - R[5]) / scale;
+        quat[1] = 0.25f * scale;
+        quat[2] = (R[1] + R[3]) / scale;
+        quat[3] = (R[2] + R[6]) / scale;
+    } else if (R[4] > R[8]) {
+        scale = 2.0f * sqrtf(1.0f + R[4] - R[0] - R[8]);
+        quat[0] = (R[2] - R[6]) / scale;
+        quat[1] = (R[1] + R[3]) / scale;
+        quat[2] = 0.25f * scale;
+        quat[3] = (R[5] + R[7]) / scale;
+    } else {
+        scale = 2.0f * sqrtf(1.0f + R[8] - R[0] - R[4]);
+        quat[0] = (R[3] - R[1]) / scale;
+        quat[1] = (R[2] + R[6]) / scale;
+        quat[2] = (R[5] + R[7]) / scale;
+        quat[3] = 0.25f * scale;
+    }
+}
+
+static void quat_multiply(const float lhs[4], const float rhs[4], float out[4])
+{
+    out[0] = lhs[0] * rhs[0] - lhs[1] * rhs[1] -
+        lhs[2] * rhs[2] - lhs[3] * rhs[3];
+    out[1] = lhs[0] * rhs[1] + lhs[1] * rhs[0] +
+        lhs[2] * rhs[3] - lhs[3] * rhs[2];
+    out[2] = lhs[0] * rhs[2] - lhs[1] * rhs[3] +
+        lhs[2] * rhs[0] + lhs[3] * rhs[1];
+    out[3] = lhs[0] * rhs[3] + lhs[1] * rhs[2] -
+        lhs[2] * rhs[1] + lhs[3] * rhs[0];
+}
+
+static int quat_normalize(float quat[4])
+{
+    float norm = sqrtf(quat[0] * quat[0] + quat[1] * quat[1] +
+        quat[2] * quat[2] + quat[3] * quat[3]);
+
+    if (!isfinite(norm) || norm <= 1.0e-8f)
+        return -1;
+    quat[0] /= norm;
+    quat[1] /= norm;
+    quat[2] /= norm;
+    quat[3] /= norm;
+    return 0;
+}
+
+static int quat_is_available(const float quat[4])
+{
+    return quat[0] != 0.0f || quat[1] != 0.0f ||
+        quat[2] != 0.0f || quat[3] != 0.0f;
+}
+
+static int matrix_is_configured(const float matrix[9])
+{
+    int i;
+
+    for (i = 0; i < 9; ++i) {
+        if (matrix[i] != 0.0f)
+            return 1;
+    }
+    return 0;
+}
+
 void imu_apply_rotation_and_offset(struct imu_dev *dev, struct imu_data *data)
 {
-    float temp_acc[3], temp_gyro[3];
+    float temp_acc[3], temp_gyro[3], temp_mag[3];
+    int has_quaternion = quat_is_available(data->quat);
 
     /* subtract bias offset */
     data->acc[0] -= dev->config.acc_offset[0];
@@ -31,14 +111,26 @@ void imu_apply_rotation_and_offset(struct imu_dev *dev, struct imu_data *data)
     data->gyro[2] -= dev->config.gyro_offset[2];
 
     /* apply mounting matrix if configured */
-    if (dev->config.mounting_matrix[0] != 0.0f ||
-        dev->config.mounting_matrix[8] != 0.0f) {
+    if (matrix_is_configured(dev->config.mounting_matrix)) {
         memcpy(temp_acc, data->acc, sizeof(temp_acc));
         memcpy(temp_gyro, data->gyro, sizeof(temp_gyro));
+        memcpy(temp_mag, data->mag, sizeof(temp_mag));
 
         mat3_mult_vec3(dev->config.mounting_matrix, temp_acc, data->acc);
         mat3_mult_vec3(dev->config.mounting_matrix, temp_gyro, data->gyro);
+        mat3_mult_vec3(dev->config.mounting_matrix, temp_mag, data->mag);
+
+        if (has_quaternion) {
+            float mounting_quat[4];
+            float sensor_quat[4];
+
+            memcpy(sensor_quat, data->quat, sizeof(sensor_quat));
+            mat3_to_quat(dev->config.mounting_matrix, mounting_quat);
+            quat_multiply(mounting_quat, sensor_quat, data->quat);
+            quat_normalize(data->quat);
+        }
     }
+
 }
 
 int imu_init(struct imu_dev *dev, const struct imu_config *cfg)
@@ -91,7 +183,7 @@ int imu_calibrate_gyro_bias(struct imu_dev *dev, uint32_t duration_ms)
     int valid_count = 0;
     int i;
 
-    if (!dev)
+    if (!dev || !dev->ops || !dev->ops->read)
         return -1;
 
     samples = (duration_ms * 1000) / delay_us;
@@ -103,7 +195,8 @@ int imu_calibrate_gyro_bias(struct imu_dev *dev, uint32_t duration_ms)
     memset(dev->config.gyro_offset, 0, sizeof(dev->config.gyro_offset));
 
     for (i = 0; i < samples; i++) {
-        if (imu_read(dev, &data) == 0) {
+        /* Offsets are stored in the sensor frame and rotated during imu_read. */
+        if (dev->ops->read(dev, &data) == 0) {
             sum_gyro[0] += data.gyro[0];
             sum_gyro[1] += data.gyro[1];
             sum_gyro[2] += data.gyro[2];
