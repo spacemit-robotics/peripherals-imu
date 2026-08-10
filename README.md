@@ -16,6 +16,7 @@ IMU（惯性测量单元）组件提供统一的传感器驱动抽象层，用�
 
 **当前支持的驱动：**
 - `drv_uart_cmp10a` - CMP10A UART 接口 IMU
+- `drv_uart_forsense` - Forsense 54-byte UART 帧 IMU，含 CRC、SI 单位转换和姿态输出
 - `drv_i2c_mxc4005` - MXC4005 I2C 接口加速度计
 - `drv_spi_icm42670p` - ICM-42670-P SPI 接口 6 轴 IMU
 icm42670p支持1.6k、800、400、200、100、50、25、12.5 Hz等固定频率的帧率输出
@@ -37,7 +38,7 @@ icm42670p支持1.6k、800、400、200、100、50、25、12.5 Hz等固定频率�
 cd peripherals-imu
 mkdir build && cd build
 cmake -DBUILD_TESTS=ON \
-  -DSROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS="drv_uart_cmp10a;drv_spi_icm42670p" ..
+  -DSROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS="drv_uart_cmp10a;drv_uart_forsense;drv_spi_icm42670p" ..
 make
 ```
 
@@ -46,11 +47,13 @@ make
 构建时启用 `BUILD_TESTS=ON` 后会生成测试程序 `test_imu_uart`，可直接运行：
 
 ```bash
-# 指定设备与波特率运行（CMP10A 常用 115200）
-./test_imu_uart -d /dev/ttyS1 -b 115200
+# CMP10A
+./test_imu_uart -t CMP10A:cmp10a_imu -d /dev/ttyS1 -b 115200
 
-# 可选参数：-r 打印频率(Hz)，-c 陀螺仪校准时长(ms)，-n 采样次数，-h 帮助
-./test_imu_uart -d /dev/ttyUSB0 -b 115200 -r 10 -c 3000 -n 100
+# Forsense；-m 为传感器到机体的 3x3 旋转矩阵
+./test_imu_uart -t drv_uart_forsense:forsense_imu \
+  -d /dev/ttyUSB0 -b 460800 -r 100 -n 100 \
+  -m '1,0,0,0,1,0,0,0,1'
 ```
 
 ICM-42670-P SPI 示例：
@@ -93,7 +96,7 @@ struct imu_dev *dev = imu_alloc_spi("icm42670p", "/dev/spidev0.0", 0, &spi_cfg);
 struct imu_config cfg = {
     .mounting_matrix = {1,0,0, 0,1,0, 0,0,1},
     .sample_rate = 100,
-    .dlpf_freq = 50
+    .dlpf_freq = 50,
 };
 imu_init(dev, &cfg);
 
@@ -107,6 +110,11 @@ imu_free(dev);
 ```
 
 当前 `drv_spi_icm42670p` 按数据手册默认使用 4-wire SPI、Mode 0、8-bit 字长，默认把加速度计配置为 `+-16g`、陀螺仪配置为 `+-2000dps`，并按 `imu_config.sample_rate`/`imu_config.dlpf_freq` 设置 ODR 与 DLPF。
+
+`mounting_matrix` 是从传感器坐标系到机体坐标系的行优先旋转矩阵，向量按
+`v_body = R_mount * v_sensor` 变换，姿态按
+`R_body = R_mount * R_sensor` 组合。四元数顺序为 `w,x,y,z`，欧拉角采用
+ZYX（roll、pitch、yaw）约定。
 
 ## 详细使用
 

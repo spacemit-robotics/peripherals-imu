@@ -16,6 +16,7 @@ The IMU (Inertial Measurement Unit) component provides a unified sensor driver a
 
 **Currently supported drivers:**
 - `drv_uart_cmp10a` - CMP10A UART interface IMU
+- `drv_uart_forsense` - Forsense UART IMU with 54-byte frame decoding, CRC and SI conversion
 - `drv_i2c_mxc4005` - MXC4005 I2C interface accelerometer
 - `drv_spi_icm42670p` - ICM-42670-P SPI interface 6-axis IMU
 
@@ -35,7 +36,7 @@ Standalone build (without SDK):
 cd peripherals-imu
 mkdir build && cd build
 cmake -DBUILD_TESTS=ON \
-  -DSROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS="drv_uart_cmp10a;drv_spi_icm42670p" ..
+  -DSROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS="drv_uart_cmp10a;drv_uart_forsense;drv_spi_icm42670p" ..
 make
 ```
 
@@ -44,11 +45,13 @@ make
 With `BUILD_TESTS=ON`, the test program `test_imu_uart` is built. Run it directly:
 
 ```bash
-# Run with device and baud (CMP10A typically uses 115200)
-./test_imu_uart -d /dev/ttyS1 -b 115200
+# CMP10A
+./test_imu_uart -t CMP10A:cmp10a_imu -d /dev/ttyS1 -b 115200
 
-# Optional: -r print rate (Hz), -c gyro calibration duration (ms), -n sample count, -h help
-./test_imu_uart -d /dev/ttyUSB0 -b 115200 -r 10 -c 3000 -n 100
+# Forsense; -m is the sensor-to-body matrix
+./test_imu_uart -t drv_uart_forsense:forsense_imu \
+  -d /dev/ttyUSB0 -b 460800 -r 100 -n 100 \
+  -m '1,0,0,0,1,0,0,0,1'
 ```
 
 ICM-42670-P SPI examples:
@@ -90,7 +93,7 @@ struct imu_dev *dev = imu_alloc_spi("icm42670p", "/dev/spidev0.0", 0, &spi_cfg);
 struct imu_config cfg = {
     .mounting_matrix = {1,0,0, 0,1,0, 0,0,1},
     .sample_rate = 100,
-    .dlpf_freq = 50
+    .dlpf_freq = 50,
 };
 imu_init(dev, &cfg);
 
@@ -104,6 +107,11 @@ imu_free(dev);
 ```
 
 The current `drv_spi_icm42670p` driver uses 4-wire SPI, Mode 0, and 8-bit word length by default according to the datasheet. It configures the accelerometer as `+-16g`, the gyroscope as `+-2000dps`, and sets ODR and DLPF based on `imu_config.sample_rate` and `imu_config.dlpf_freq`.
+
+`mounting_matrix` is a row-major rotation from sensor frame to body frame. Vectors use
+`v_body = R_mount * v_sensor`, while attitude uses
+`R_body = R_mount * R_sensor`. Quaternions are ordered `w,x,y,z` and use the ZYX
+(roll, pitch, yaw) Euler convention.
 
 ## Detailed Usage
 
