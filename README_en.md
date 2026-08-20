@@ -110,7 +110,7 @@ The current `drv_spi_icm42670p` driver uses 4-wire SPI, Mode 0, and 8-bit word l
 
 `mounting_matrix` is a row-major rotation from sensor frame to body frame. Vectors use
 `v_body = R_mount * v_sensor`, while attitude uses
-`R_body = R_mount * R_sensor`. Quaternions are ordered `w,x,y,z` and use the ZYX
+`R_world_body = R_world_sensor * R_mount^T`. Quaternions are ordered `w,x,y,z` and use the ZYX
 (roll, pitch, yaw) Euler convention.
 
 ## Detailed Usage

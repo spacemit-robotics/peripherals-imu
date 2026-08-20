@@ -106,8 +106,7 @@ static int forsense_decode_frame(const uint8_t frame[FORSENSE_FRAME_SIZE],
 
     memset(data, 0, sizeof(*data));
     pitch = read_float_le(frame + 10) * DEG_TO_RAD;
-    /* Forsense attitude roll uses the opposite sign from the SDK convention. */
-    roll = -read_float_le(frame + 14) * DEG_TO_RAD;
+    roll = read_float_le(frame + 14) * DEG_TO_RAD;
     yaw = read_float_le(frame + 18) * DEG_TO_RAD;
     data->acc[0] = read_float_le(frame + 22) * STANDARD_GRAVITY;
     data->acc[1] = read_float_le(frame + 26) * STANDARD_GRAVITY;

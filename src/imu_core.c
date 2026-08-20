@@ -65,6 +65,14 @@ static void quat_multiply(const float lhs[4], const float rhs[4], float out[4])
         lhs[2] * rhs[1] + lhs[3] * rhs[0];
 }
 
+static void quat_conjugate(const float in[4], float out[4])
+{
+    out[0] = in[0];
+    out[1] = -in[1];
+    out[2] = -in[2];
+    out[3] = -in[3];
+}
+
 static int quat_normalize(float quat[4])
 {
     float norm = sqrtf(quat[0] * quat[0] + quat[1] * quat[1] +
@@ -121,12 +129,16 @@ void imu_apply_rotation_and_offset(struct imu_dev *dev, struct imu_data *data)
         mat3_mult_vec3(dev->config.mounting_matrix, temp_mag, data->mag);
 
         if (has_quaternion) {
-            float mounting_quat[4];
+            float sensor_to_body_quat[4];
+            float body_to_sensor_quat[4];
             float sensor_quat[4];
 
             memcpy(sensor_quat, data->quat, sizeof(sensor_quat));
-            mat3_to_quat(dev->config.mounting_matrix, mounting_quat);
-            quat_multiply(mounting_quat, sensor_quat, data->quat);
+            mat3_to_quat(dev->config.mounting_matrix,
+                    sensor_to_body_quat);
+            quat_normalize(sensor_to_body_quat);
+            quat_conjugate(sensor_to_body_quat, body_to_sensor_quat);
+            quat_multiply(sensor_quat, body_to_sensor_quat, data->quat);
             quat_normalize(data->quat);
         }
     }
