@@ -357,6 +357,48 @@ static int test_spi_default_config_and_ex_args(void)
     return 0;
 }
 
+static int test_uart_mounting_quaternion(void)
+{
+    const float sqrt_half = 0.7071067812f;
+    struct imu_dev *dev;
+    struct imu_data data;
+    struct imu_config cfg = {
+        .mounting_matrix = {
+            0.0f, -1.0f, 0.0f,
+            1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f,
+        },
+        .sample_rate = 100,
+    };
+
+    dev = imu_alloc_uart("FAKEUART:mounted-imu", "/dev/fake-uart",
+            115200U, NULL);
+    EXPECT_TRUE(dev != NULL, "mounted uart allocation should succeed");
+    EXPECT_TRUE(imu_init(dev, &cfg) == 0,
+            "mounted uart init should succeed");
+    EXPECT_TRUE(imu_read(dev, &data) == 0,
+            "mounted uart read should succeed");
+
+    EXPECT_TRUE(float_close(data.gyro[0], -0.02f),
+            "mounted gyro x mismatch");
+    EXPECT_TRUE(float_close(data.gyro[1], 0.01f),
+            "mounted gyro y mismatch");
+    EXPECT_TRUE(float_close(data.gyro[2], 0.03f),
+            "mounted gyro z mismatch");
+    EXPECT_TRUE(float_close(data.quat[0], sqrt_half),
+            "mounted quaternion w mismatch");
+    EXPECT_TRUE(float_close(data.quat[1], 0.0f),
+            "mounted quaternion x mismatch");
+    EXPECT_TRUE(float_close(data.quat[2], 0.0f),
+            "mounted quaternion y mismatch");
+    EXPECT_TRUE(float_close(data.quat[3], -sqrt_half),
+            "mounted quaternion z mismatch");
+
+    imu_free(dev);
+    printf("[PASS] uart-mounting-quaternion\n");
+    return 0;
+}
+
 static int test_uart_gyro_calibration(void)
 {
     struct imu_dev *dev;
@@ -404,6 +446,8 @@ static int run_functional_tests(void)
     if (test_i2c_transform_and_offsets() != 0)
         return 1;
     if (test_spi_default_config_and_ex_args() != 0)
+        return 1;
+    if (test_uart_mounting_quaternion() != 0)
         return 1;
     if (test_uart_gyro_calibration() != 0)
         return 1;

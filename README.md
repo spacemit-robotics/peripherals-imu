@@ -113,7 +113,7 @@ imu_free(dev);
 
 `mounting_matrix` 是从传感器坐标系到机体坐标系的行优先旋转矩阵，向量按
 `v_body = R_mount * v_sensor` 变换，姿态按
-`R_body = R_mount * R_sensor` 组合。四元数顺序为 `w,x,y,z`，欧拉角采用
+`R_world_body = R_world_sensor * R_mount^T` 组合。四元数顺序为 `w,x,y,z`，欧拉角采用
 ZYX（roll、pitch、yaw）约定。
 
 ## 详细使用
