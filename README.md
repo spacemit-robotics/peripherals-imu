@@ -16,7 +16,7 @@ IMU（惯性测量单元）组件提供统一的传感器驱动抽象层，用�
 
 **当前支持的驱动：**
 - `drv_uart_cmp10a` - CMP10A UART 接口 IMU
-- `drv_uart_forsense` - Forsense 54-byte UART 帧 IMU，含 CRC、SI 单位转换和姿态输出
+- `drv_uart_forsense` - Forsense 54-byte UART 帧 IMU，含 CRC、设备时间戳、SI 单位转换和姿态输出
 - `drv_i2c_mxc4005` - MXC4005 I2C 接口加速度计
 - `drv_spi_icm42670p` - ICM-42670-P SPI 接口 6 轴 IMU
 icm42670p支持1.6k、800、400、200、100、50、25、12.5 Hz等固定频率的帧率输出
@@ -110,6 +110,9 @@ imu_free(dev);
 ```
 
 当前 `drv_spi_icm42670p` 按数据手册默认使用 4-wire SPI、Mode 0、8-bit 字长，默认把加速度计配置为 `+-16g`、陀螺仪配置为 `+-2000dps`，并按 `imu_config.sample_rate`/`imu_config.dlpf_freq` 设置 ODR 与 DLPF。
+
+`drv_uart_forsense` 读取传感器已配置的数据流，不修改其持久化 ODR；在 Linux 支持的
+串口驱动上会启用低延迟模式，避免 USB-UART 默认缓冲增加反馈年龄。
 
 `mounting_matrix` 是从传感器坐标系到机体坐标系的行优先旋转矩阵，向量按
 `v_body = R_mount * v_sensor` 变换，姿态按

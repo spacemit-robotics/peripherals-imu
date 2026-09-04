@@ -16,7 +16,7 @@ The IMU (Inertial Measurement Unit) component provides a unified sensor driver a
 
 **Currently supported drivers:**
 - `drv_uart_cmp10a` - CMP10A UART interface IMU
-- `drv_uart_forsense` - Forsense UART IMU with 54-byte frame decoding, CRC and SI conversion
+- `drv_uart_forsense` - Forsense UART IMU with 54-byte frame decoding, CRC, device timestamps and SI conversion
 - `drv_i2c_mxc4005` - MXC4005 I2C interface accelerometer
 - `drv_spi_icm42670p` - ICM-42670-P SPI interface 6-axis IMU
 
@@ -107,6 +107,9 @@ imu_free(dev);
 ```
 
 The current `drv_spi_icm42670p` driver uses 4-wire SPI, Mode 0, and 8-bit word length by default according to the datasheet. It configures the accelerometer as `+-16g`, the gyroscope as `+-2000dps`, and sets ODR and DLPF based on `imu_config.sample_rate` and `imu_config.dlpf_freq`.
+
+`drv_uart_forsense` reads the sensor's preconfigured stream and does not change its persistent ODR.
+It enables low-latency mode when supported by the Linux serial driver to avoid USB-UART buffering.
 
 `mounting_matrix` is a row-major rotation from sensor frame to body frame. Vectors use
 `v_body = R_mount * v_sensor`, while attitude uses

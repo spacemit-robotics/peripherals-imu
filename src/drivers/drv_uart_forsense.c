@@ -8,12 +8,13 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/serial.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -33,6 +34,9 @@ struct forsense_priv {
     int fd;
     uint8_t stream[FORSENSE_STREAM_BUFFER_SIZE];
     size_t stream_size;
+    uint32_t last_sensor_time_us;
+    uint64_t extended_sensor_time_us;
+    int has_sensor_time;
 };
 
 static uint16_t read_u16_le(const uint8_t *data)
@@ -105,6 +109,7 @@ static int forsense_decode_frame(const uint8_t frame[FORSENSE_FRAME_SIZE],
     }
 
     memset(data, 0, sizeof(*data));
+    data->timestamp_us = read_u32_le(frame + 6);
     pitch = read_float_le(frame + 10) * DEG_TO_RAD;
     roll = read_float_le(frame + 14) * DEG_TO_RAD;
     yaw = read_float_le(frame + 18) * DEG_TO_RAD;
@@ -126,12 +131,20 @@ static int forsense_decode_frame(const uint8_t frame[FORSENSE_FRAME_SIZE],
     return 0;
 }
 
-static uint64_t timestamp_us(void)
+static void configure_low_latency(int fd, const char *device)
 {
-    struct timeval time;
+    struct serial_struct serial;
 
-    gettimeofday(&time, NULL);
-    return (uint64_t)time.tv_sec * 1000000ULL + (uint64_t)time.tv_usec;
+    if (ioctl(fd, TIOCGSERIAL, &serial) != 0)
+        return;
+    if ((serial.flags & ASYNC_LOW_LATENCY) != 0)
+        return;
+    serial.flags |= ASYNC_LOW_LATENCY;
+    if (ioctl(fd, TIOCSSERIAL, &serial) != 0) {
+        fprintf(stderr,
+                "[drv_uart_forsense] unable to enable low-latency mode on %s: %s\n",
+                device, strerror(errno));
+    }
 }
 
 static speed_t baud_to_speed(uint32_t baud)
@@ -194,7 +207,29 @@ static int forsense_init(struct imu_dev *dev)
         priv->fd = -1;
         return -1;
     }
+    configure_low_latency(priv->fd, priv->device);
     tcflush(priv->fd, TCIFLUSH);
+    return 0;
+}
+
+static int extend_sensor_timestamp(struct forsense_priv *priv,
+        struct imu_data *data)
+{
+    const uint32_t current = (uint32_t)data->timestamp_us;
+
+    if (!priv->has_sensor_time) {
+        priv->last_sensor_time_us = current;
+        priv->extended_sensor_time_us = current;
+        priv->has_sensor_time = 1;
+    } else {
+        const uint32_t delta = current - priv->last_sensor_time_us;
+
+        if (delta > UINT32_MAX / 2U)
+            return -1;
+        priv->last_sensor_time_us = current;
+        priv->extended_sensor_time_us += delta;
+    }
+    data->timestamp_us = priv->extended_sensor_time_us;
     return 0;
 }
 
@@ -220,7 +255,8 @@ static int parse_latest_frame(struct forsense_priv *priv, struct imu_data *data)
         }
         if (priv->stream_size < FORSENSE_FRAME_SIZE)
             break;
-        if (forsense_decode_frame(priv->stream, &latest) == 0) {
+        if (forsense_decode_frame(priv->stream, &latest) == 0 &&
+            extend_sensor_timestamp(priv, &latest) == 0) {
             *data = latest;
             found = 1;
             discard_prefix(priv, FORSENSE_FRAME_SIZE);
@@ -257,7 +293,6 @@ static int forsense_read(struct imu_dev *dev, struct imu_data *data)
     }
     if (parse_latest_frame(priv, data) < 0)
         return -1;
-    data->timestamp_us = timestamp_us();
     return 0;
 }
 
