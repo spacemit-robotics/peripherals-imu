@@ -293,6 +293,16 @@ static int test_i2c_transform_and_offsets(void)
     EXPECT_TRUE(imu_read(dev, &data) == 0, "i2c read should succeed");
     EXPECT_TRUE(data.timestamp_us == 1001U,
             "timestamp should come from fake driver");
+    {
+        struct imu_diagnostics diagnostics;
+
+        EXPECT_TRUE(imu_get_diagnostics(dev, &diagnostics) == 0,
+                "diagnostics should be available after a read");
+        EXPECT_TRUE(diagnostics.receive_timestamp_us > 0U,
+                "core should retain a host receive timestamp");
+        EXPECT_TRUE(diagnostics.receive_timestamp_us != data.timestamp_us,
+                "sample and receive timestamps should remain distinct");
+    }
     EXPECT_TRUE(float_close(data.acc[0], 1.0f), "transformed acc x mismatch");
     EXPECT_TRUE(float_close(data.acc[1], 0.0f), "transformed acc y mismatch");
     EXPECT_TRUE(float_close(data.acc[2], 2.0f), "transformed acc z mismatch");
@@ -458,7 +468,9 @@ static int run_functional_tests(void)
 
 static int test_invalid_alloc_and_api_inputs(void)
 {
+    struct imu_dev empty_dev = {0};
     struct imu_data data;
+    struct imu_diagnostics diagnostics;
 
     EXPECT_TRUE(imu_alloc_i2c(NULL, "/dev/fake-i2c", 0x1CU, NULL) == NULL,
             "NULL i2c name should be rejected");
@@ -480,6 +492,10 @@ static int test_invalid_alloc_and_api_inputs(void)
             "NULL init should return -1");
     EXPECT_TRUE(imu_read(NULL, &data) == -1,
             "NULL read should return -1");
+    EXPECT_TRUE(imu_get_diagnostics(NULL, &diagnostics) == -1,
+            "NULL diagnostics device should return -1");
+    EXPECT_TRUE(imu_get_diagnostics(&empty_dev, NULL) == -1,
+            "NULL diagnostics output should return -1");
     EXPECT_TRUE(imu_calibrate_gyro_bias(NULL, 5U) == -1,
             "NULL calibration should return -1");
 

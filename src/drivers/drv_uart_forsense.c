@@ -27,6 +27,7 @@
 #define FORSENSE_FRAME_SIZE 54U
 #define FORSENSE_FRAME_CRC_OFFSET 50U
 #define FORSENSE_STREAM_BUFFER_SIZE (FORSENSE_FRAME_SIZE * 4)
+#define FORSENSE_MAX_CONTIGUOUS_TIME_GAP_US 60000000U
 
 struct forsense_priv {
     char device[128];
@@ -37,6 +38,14 @@ struct forsense_priv {
     uint32_t last_sensor_time_us;
     uint64_t extended_sensor_time_us;
     int has_sensor_time;
+    struct imu_diagnostics diagnostics;
+};
+
+enum forsense_decode_result {
+    FORSENSE_DECODE_OK = 0,
+    FORSENSE_DECODE_FORMAT_ERROR = -1,
+    FORSENSE_DECODE_CRC_ERROR = -2,
+    FORSENSE_DECODE_VALUE_ERROR = -3,
 };
 
 static uint16_t read_u16_le(const uint8_t *data)
@@ -101,11 +110,11 @@ static int forsense_decode_frame(const uint8_t frame[FORSENSE_FRAME_SIZE],
     if (frame[0] != 0xaa || frame[1] != 0x55 ||
         read_u16_le(frame + 2) != FORSENSE_FRAME_ID ||
         read_u16_le(frame + 4) != FORSENSE_FRAME_PAYLOAD_SIZE) {
-        return -1;
+        return FORSENSE_DECODE_FORMAT_ERROR;
     }
     if (forsense_crc32(1U, frame, FORSENSE_FRAME_CRC_OFFSET) !=
         read_u32_le(frame + FORSENSE_FRAME_CRC_OFFSET)) {
-        return -1;
+        return FORSENSE_DECODE_CRC_ERROR;
     }
 
     memset(data, 0, sizeof(*data));
@@ -125,7 +134,7 @@ static int forsense_decode_frame(const uint8_t frame[FORSENSE_FRAME_SIZE],
         !isfinite(data->acc[2]) || !isfinite(data->gyro[0]) ||
         !isfinite(data->gyro[1]) || !isfinite(data->gyro[2]) ||
         !isfinite(data->temp)) {
-        return -1;
+        return FORSENSE_DECODE_VALUE_ERROR;
     }
     rpy_to_quaternion(roll, pitch, yaw, data->quat);
     return 0;
@@ -223,11 +232,13 @@ static int extend_sensor_timestamp(struct forsense_priv *priv,
         priv->has_sensor_time = 1;
     } else {
         const uint32_t delta = current - priv->last_sensor_time_us;
+        const int moved_backward = current < priv->last_sensor_time_us;
 
-        if (delta > UINT32_MAX / 2U)
-            return -1;
         priv->last_sensor_time_us = current;
-        priv->extended_sensor_time_us += delta;
+        if (moved_backward && delta > FORSENSE_MAX_CONTIGUOUS_TIME_GAP_US)
+            ++priv->extended_sensor_time_us;
+        else
+            priv->extended_sensor_time_us += delta;
     }
     data->timestamp_us = priv->extended_sensor_time_us;
     return 0;
@@ -250,17 +261,31 @@ static int parse_latest_frame(struct forsense_priv *priv, struct imu_data *data)
 
     while (priv->stream_size >= 2) {
         if (priv->stream[0] != 0xaa || priv->stream[1] != 0x55) {
+            ++priv->diagnostics.resync_discarded_bytes;
             discard_prefix(priv, 1);
             continue;
         }
         if (priv->stream_size < FORSENSE_FRAME_SIZE)
             break;
-        if (forsense_decode_frame(priv->stream, &latest) == 0 &&
-            extend_sensor_timestamp(priv, &latest) == 0) {
-            *data = latest;
-            found = 1;
-            discard_prefix(priv, FORSENSE_FRAME_SIZE);
-        } else {
+        {
+            const int decode_result =
+                forsense_decode_frame(priv->stream, &latest);
+
+            if (decode_result == FORSENSE_DECODE_OK &&
+                extend_sensor_timestamp(priv, &latest) == 0) {
+                if (found)
+                    ++priv->diagnostics.superseded_frames;
+                ++priv->diagnostics.valid_frames;
+                *data = latest;
+                found = 1;
+                discard_prefix(priv, FORSENSE_FRAME_SIZE);
+                continue;
+            }
+            if (decode_result == FORSENSE_DECODE_CRC_ERROR)
+                ++priv->diagnostics.crc_errors;
+            else
+                ++priv->diagnostics.decode_errors;
+            ++priv->diagnostics.resync_discarded_bytes;
             discard_prefix(priv, 1);
         }
     }
@@ -281,6 +306,7 @@ static int forsense_read(struct imu_dev *dev, struct imu_data *data)
             size_t copy_size = (size_t)size;
             if (copy_size > sizeof(priv->stream) - priv->stream_size) {
                 size_t discard = copy_size - (sizeof(priv->stream) - priv->stream_size);
+                priv->diagnostics.overflow_discarded_bytes += discard;
                 discard_prefix(priv, discard);
             }
             memcpy(priv->stream + priv->stream_size, incoming, copy_size);
@@ -293,6 +319,17 @@ static int forsense_read(struct imu_dev *dev, struct imu_data *data)
     }
     if (parse_latest_frame(priv, data) < 0)
         return -1;
+    return 0;
+}
+
+static int forsense_get_diagnostics(struct imu_dev *dev,
+        struct imu_diagnostics *diagnostics)
+{
+    struct forsense_priv *priv = dev ? dev->priv_data : NULL;
+
+    if (!priv || !diagnostics)
+        return -1;
+    *diagnostics = priv->diagnostics;
     return 0;
 }
 
@@ -313,6 +350,7 @@ static void forsense_free(struct imu_dev *dev)
 static const struct imu_ops forsense_ops = {
     .init = forsense_init,
     .read = forsense_read,
+    .get_diagnostics = forsense_get_diagnostics,
     .free = forsense_free,
 };
 

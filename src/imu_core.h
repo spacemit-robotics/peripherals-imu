@@ -46,6 +46,8 @@ enum imu_driver_type {
 struct imu_ops {
     int (*init)(struct imu_dev *dev);
     int (*read)(struct imu_dev *dev, struct imu_data *data);
+    int (*get_diagnostics)(struct imu_dev *dev,
+            struct imu_diagnostics *diagnostics);
     void (*free)(struct imu_dev *dev);
 };
 
@@ -57,6 +59,7 @@ struct imu_dev {
     void *priv_data;
     imu_callback_t cb;
     void *cb_ctx;
+    uint64_t receive_timestamp_us;
 };
 
 /* 5. 通用工厂函数类型 */
