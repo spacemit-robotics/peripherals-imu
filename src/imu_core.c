@@ -7,11 +7,22 @@
  */
 #include "imu_core.h"
 #include <math.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
+
+static uint64_t monotonic_time_us(void)
+{
+    struct timespec time;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0)
+        return 0;
+    return (uint64_t)time.tv_sec * 1000000ULL +
+        (uint64_t)time.tv_nsec / 1000ULL;
+}
 
 /* matrix-vector multiply: out = R * in */
 static void mat3_mult_vec3(const float R[9], const float in[3], float out[3])
@@ -172,10 +183,29 @@ int imu_read(struct imu_dev *dev, struct imu_data *data)
         return -1;
 
     ret = dev->ops->read(dev, data);
-    if (ret == 0)
+    if (ret == 0) {
+        dev->receive_timestamp_us = monotonic_time_us();
         imu_apply_rotation_and_offset(dev, data);
+    }
 
     return ret;
+}
+
+int imu_get_diagnostics(struct imu_dev *dev,
+        struct imu_diagnostics *diagnostics)
+{
+    int ret = 0;
+
+    if (!dev || !diagnostics)
+        return -1;
+
+    memset(diagnostics, 0, sizeof(*diagnostics));
+    if (dev->ops && dev->ops->get_diagnostics)
+        ret = dev->ops->get_diagnostics(dev, diagnostics);
+    if (ret < 0)
+        return ret;
+    diagnostics->receive_timestamp_us = dev->receive_timestamp_us;
+    return 0;
 }
 
 void imu_set_callback(struct imu_dev *dev, imu_callback_t cb, void *ctx)

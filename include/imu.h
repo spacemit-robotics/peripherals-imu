@@ -31,6 +31,26 @@ struct imu_data {
 };
 
 /*
+ * struct imu_diagnostics - cumulative transport and parser diagnostics
+ * @valid_frames:             valid sensor frames decoded
+ * @crc_errors:               frames rejected by checksum validation
+ * @decode_errors:            frames rejected by format, values or sample timing
+ * @superseded_frames:        valid older frames skipped when returning latest
+ * @resync_discarded_bytes:   bytes discarded while finding frame boundaries
+ * @overflow_discarded_bytes: bytes discarded when the stream buffer is full
+ * @receive_timestamp_us:     host monotonic time of the latest successful read
+ */
+struct imu_diagnostics {
+    uint64_t valid_frames;
+    uint64_t crc_errors;
+    uint64_t decode_errors;
+    uint64_t superseded_frames;
+    uint64_t resync_discarded_bytes;
+    uint64_t overflow_discarded_bytes;
+    uint64_t receive_timestamp_us;
+};
+
+/*
  * struct imu_config - sensor configuration
  * @mounting_matrix: 3x3 rotation matrix (sensor to body frame)
  * @acc_offset:      accelerometer bias offset
@@ -68,6 +88,7 @@ struct imu_spi_config {
 
 int imu_init(struct imu_dev *dev, const struct imu_config *cfg);
 int imu_read(struct imu_dev *dev, struct imu_data *data);
+int imu_get_diagnostics(struct imu_dev *dev, struct imu_diagnostics *diagnostics);
 void imu_set_callback(struct imu_dev *dev, imu_callback_t cb, void *ctx);
 int imu_calibrate_gyro_bias(struct imu_dev *dev, uint32_t duration_ms);
 void imu_free(struct imu_dev *dev);

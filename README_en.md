@@ -110,6 +110,17 @@ The current `drv_spi_icm42670p` driver uses 4-wire SPI, Mode 0, and 8-bit word l
 
 `drv_uart_forsense` reads the sensor's preconfigured stream and does not change its persistent ODR.
 It enables low-latency mode when supported by the Linux serial driver to avoid USB-UART buffering.
+`imu_data.timestamp_us` is the sensor sample time. `imu_get_diagnostics().receive_timestamp_us` is
+the host monotonic time of the latest successful SDK read. The diagnostics also report cumulative
+valid frames, CRC/decode errors, superseded frames, and stream resynchronization counters. Drivers
+without parser diagnostics return the core receive time and zero-filled parser counters.
+
+Forsense extends its 32-bit sample counter to 64 bits. A repeated counter or an unsigned
+counter delta exceeding 60 seconds is counted in `decode_errors` and discarded without
+advancing the output or receive timestamp. The comparison baseline is updated so increasing
+samples can recover after a sensor restart. Normal counter wrap preserves elapsed time;
+restart or abnormal gaps are not reconstructed, so the extended time does not measure actual
+elapsed time across a restart.
 
 `mounting_matrix` is a row-major rotation from sensor frame to body frame. Vectors use
 `v_body = R_mount * v_sensor`, while attitude uses
