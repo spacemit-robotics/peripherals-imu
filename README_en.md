@@ -115,6 +115,13 @@ the host monotonic time of the latest successful SDK read. The diagnostics also 
 valid frames, CRC/decode errors, superseded frames, and stream resynchronization counters. Drivers
 without parser diagnostics return the core receive time and zero-filled parser counters.
 
+Forsense extends its 32-bit sample counter to 64 bits. A repeated counter or an unsigned
+counter delta exceeding 60 seconds is counted in `decode_errors` and discarded without
+advancing the output or receive timestamp. The comparison baseline is updated so increasing
+samples can recover after a sensor restart. Normal counter wrap preserves elapsed time;
+restart or abnormal gaps are not reconstructed, so the extended time does not measure actual
+elapsed time across a restart.
+
 `mounting_matrix` is a row-major rotation from sensor frame to body frame. Vectors use
 `v_body = R_mount * v_sensor`, while attitude uses
 `R_world_body = R_world_sensor * R_mount^T`. Quaternions are ordered `w,x,y,z` and use the ZYX

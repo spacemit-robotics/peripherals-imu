@@ -34,7 +34,7 @@ struct imu_data {
  * struct imu_diagnostics - cumulative transport and parser diagnostics
  * @valid_frames:             valid sensor frames decoded
  * @crc_errors:               frames rejected by checksum validation
- * @decode_errors:            frames rejected by format or non-finite values
+ * @decode_errors:            frames rejected by format, values or sample timing
  * @superseded_frames:        valid older frames skipped when returning latest
  * @resync_discarded_bytes:   bytes discarded while finding frame boundaries
  * @overflow_discarded_bytes: bytes discarded when the stream buffer is full

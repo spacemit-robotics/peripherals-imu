@@ -232,13 +232,12 @@ static int extend_sensor_timestamp(struct forsense_priv *priv,
         priv->has_sensor_time = 1;
     } else {
         const uint32_t delta = current - priv->last_sensor_time_us;
-        const int moved_backward = current < priv->last_sensor_time_us;
 
+        /* Rebase rejected samples so a sensor restart can recover. */
         priv->last_sensor_time_us = current;
-        if (moved_backward && delta > FORSENSE_MAX_CONTIGUOUS_TIME_GAP_US)
-            ++priv->extended_sensor_time_us;
-        else
-            priv->extended_sensor_time_us += delta;
+        if (delta == 0 || delta > FORSENSE_MAX_CONTIGUOUS_TIME_GAP_US)
+            return -1;
+        priv->extended_sensor_time_us += delta;
     }
     data->timestamp_us = priv->extended_sensor_time_us;
     return 0;
@@ -271,8 +270,12 @@ static int parse_latest_frame(struct forsense_priv *priv, struct imu_data *data)
             const int decode_result =
                 forsense_decode_frame(priv->stream, &latest);
 
-            if (decode_result == FORSENSE_DECODE_OK &&
-                extend_sensor_timestamp(priv, &latest) == 0) {
+            if (decode_result == FORSENSE_DECODE_OK) {
+                if (extend_sensor_timestamp(priv, &latest) < 0) {
+                    ++priv->diagnostics.decode_errors;
+                    discard_prefix(priv, FORSENSE_FRAME_SIZE);
+                    continue;
+                }
                 if (found)
                     ++priv->diagnostics.superseded_frames;
                 ++priv->diagnostics.valid_frames;
