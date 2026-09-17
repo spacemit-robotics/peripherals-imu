@@ -17,8 +17,22 @@ set(IMU_CORE_SOURCES
 )
 
 # Driver source files
+set(SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS "" CACHE STRING
+    "Enabled IMU drivers (semicolon-separated). Empty means all available drivers.")
+set(_IMU_AVAILABLE_DRIVERS
+    drv_i2c_mxc4005
+    drv_spi_icm42670p
+    drv_uart_cmp10a
+    drv_uart_forsense
+)
+if("${SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS}" STREQUAL "")
+    set(_imu_enabled_drivers ${_IMU_AVAILABLE_DRIVERS})
+else()
+    set(_imu_enabled_drivers ${SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS})
+endif()
+
 set(IMU_DRIVER_SOURCES "")
-foreach(_drv IN LISTS SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS)
+foreach(_drv IN LISTS _imu_enabled_drivers)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/drivers/${_drv}.c")
         list(APPEND IMU_DRIVER_SOURCES "src/drivers/${_drv}.c")
     else()
@@ -71,9 +85,8 @@ install(FILES include/imu.h
 option(BUILD_TESTS "Build test programs" ON)
 
 if(BUILD_TESTS)
-    list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS "drv_uart_cmp10a" _imu_uart_idx)
-    list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS
-        "drv_uart_forsense" _imu_forsense_idx)
+    list(FIND _imu_enabled_drivers "drv_uart_cmp10a" _imu_uart_idx)
+    list(FIND _imu_enabled_drivers "drv_uart_forsense" _imu_forsense_idx)
     if(_imu_uart_idx GREATER -1 OR _imu_forsense_idx GREATER -1)
         add_executable(test_imu_uart test/test_imu_uart.c)
         target_link_libraries(test_imu_uart imu)
@@ -81,7 +94,7 @@ if(BUILD_TESTS)
         install(TARGETS test_imu_uart RUNTIME DESTINATION bin)
     endif()
 
-    list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS "drv_i2c_mxc4005" _imu_i2c_idx)
+    list(FIND _imu_enabled_drivers "drv_i2c_mxc4005" _imu_i2c_idx)
     if(_imu_i2c_idx GREATER -1)
         add_executable(test_imu_i2c test/test_imu_i2c.c)
         target_link_libraries(test_imu_i2c imu)
@@ -89,7 +102,7 @@ if(BUILD_TESTS)
         install(TARGETS test_imu_i2c RUNTIME DESTINATION bin)
     endif()
 
-    list(FIND SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS "drv_spi_icm42670p" _imu_spi_idx)
+    list(FIND _imu_enabled_drivers "drv_spi_icm42670p" _imu_spi_idx)
     if(_imu_spi_idx GREATER -1)
         add_executable(test_imu_spi test/test_imu_spi.c)
         target_link_libraries(test_imu_spi imu)

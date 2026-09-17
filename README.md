@@ -42,6 +42,8 @@ cmake -DBUILD_TESTS=ON \
 make
 ```
 
+省略 `SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS` 时会编译全部现有驱动；指定该参数时仅编译列出的驱动。
+
 ### 运行示例
 
 构建时启用 `BUILD_TESTS=ON` 后会生成测试程序 `test_imu_uart`，可直接运行：
