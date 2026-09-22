@@ -12,6 +12,7 @@
 
 #include "../include/imu.h"
 #include <stddef.h>
+#include <pthread.h>
 
 /* 1. 参数适配包：用于将 alloc 参数打包成 void*（同时携带 instance 名称） */
 struct imu_args_i2c {
@@ -43,15 +44,39 @@ enum imu_driver_type {
 };
 
 /* 3. 虚函数表（驱动实现） */
+struct imu_event_source {
+    int fd;
+    short events;
+};
+
 struct imu_ops {
     int (*init)(struct imu_dev *dev);
     int (*read)(struct imu_dev *dev, struct imu_data *data);
     int (*get_diagnostics)(struct imu_dev *dev,
             struct imu_diagnostics *diagnostics);
+    /* Core stops the event worker before free. The driver releases only its
+     * private resources; core owns imu_dev, name, and synchronization objects
+     * and frees them after this callback returns. */
     void (*free)(struct imu_dev *dev);
+    /* Optional real event source. event_read consumes readiness, returning zero
+     * for a fresh sample, -EAGAIN for partial input, or a fatal negative errno.
+     * Core calls event_read under io_lock: it must not wait for new input or
+     * retry until a complete sample arrives. Use nonblocking event descriptors
+     * and bounded reads/transfers; return -EAGAIN when no sample is ready.
+     * Waiting for readiness belongs to the core poll loop, outside io_lock.
+     * event_start cleans partial resources on failure; event_stop releases only
+     * event resources after the worker exits. Core never closes the source fd. */
+    int (*event_start)(struct imu_dev *dev, struct imu_event_source *source);
+    int (*event_read)(struct imu_dev *dev, struct imu_data *data);
+    void (*event_stop)(struct imu_dev *dev);
 };
 
 /* 4. 设备对象（私有实现，imu.h 中为不透明类型） */
+enum imu_mode {
+    IMU_MODE_POLL, IMU_MODE_STARTING, IMU_MODE_ACTIVE,
+    IMU_MODE_STOPPING, IMU_MODE_FAULT
+};
+
 struct imu_dev {
     char *name; /* instance name */
     struct imu_config config;
@@ -60,6 +85,21 @@ struct imu_dev {
     imu_callback_t cb;
     void *cb_ctx;
     uint64_t receive_timestamp_us;
+    pthread_mutex_t state_lock;
+    pthread_mutex_t io_lock;
+    int sync_initialized;
+    int initialized;
+    int freeing;
+    enum imu_mode mode;
+    pthread_t worker;
+    pthread_cond_t worker_cond;
+    int worker_valid;
+    int worker_exited;
+    int self_stop;
+    int stop_fd;
+    int event_started;
+    int callback_error;
+    struct imu_event_source event_source;
 };
 
 /* 5. 通用工厂函数类型 */

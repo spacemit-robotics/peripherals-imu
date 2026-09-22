@@ -346,8 +346,6 @@ static void forsense_free(struct imu_dev *dev)
     if (priv && priv->fd >= 0)
         close(priv->fd);
     free(dev->priv_data);
-    free(dev->name);
-    free(dev);
 }
 
 static const struct imu_ops forsense_ops = {
