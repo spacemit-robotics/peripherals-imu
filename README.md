@@ -15,6 +15,8 @@ IMU（惯性测量单元）组件提供统一的传感器驱动抽象层，用�
 - 可配置采样率和低通滤波器
 
 **当前支持的驱动：**
+
+- `drv_uart_iwt603`：IWT603 UART，加速度、角速度与板载融合四元数。
 - `drv_uart_cmp10a` - CMP10A UART 接口 IMU
 - `drv_uart_forsense` - Forsense 54-byte UART 帧 IMU，含 CRC、设备时间戳、SI 单位转换和姿态输出
 - `drv_i2c_mxc4005` - MXC4005 I2C 接口加速度计

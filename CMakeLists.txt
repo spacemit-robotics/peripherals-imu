@@ -25,6 +25,7 @@ set(_IMU_AVAILABLE_DRIVERS
     drv_spi_icm42670p
     drv_uart_cmp10a
     drv_uart_forsense
+    drv_uart_iwt603
 )
 if("${SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS}" STREQUAL "")
     set(_imu_enabled_drivers ${_IMU_AVAILABLE_DRIVERS})
@@ -88,7 +89,9 @@ option(BUILD_TESTS "Build test programs" ON)
 if(BUILD_TESTS)
     list(FIND _imu_enabled_drivers "drv_uart_cmp10a" _imu_uart_idx)
     list(FIND _imu_enabled_drivers "drv_uart_forsense" _imu_forsense_idx)
-    if(_imu_uart_idx GREATER -1 OR _imu_forsense_idx GREATER -1)
+    list(FIND _imu_enabled_drivers "drv_uart_iwt603" _imu_iwt603_idx)
+    if(_imu_uart_idx GREATER -1 OR _imu_forsense_idx GREATER -1 OR
+        _imu_iwt603_idx GREATER -1)
         add_executable(test_imu_uart test/test_imu_uart.c)
         target_link_libraries(test_imu_uart imu)
         _imu_set_runtime_rpath(test_imu_uart)
