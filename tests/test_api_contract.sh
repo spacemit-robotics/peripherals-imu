@@ -14,13 +14,16 @@ mkdir -p "$log_dir" "$build_dir"
     echo "[info] module_root=$module_root"
     echo "[info] build_dir=$build_dir"
 
-    cc -D_DEFAULT_SOURCE -std=c99 -Wall -Wextra -pedantic \
+    if ! cc -D_DEFAULT_SOURCE -std=c99 -Wall -Wextra -pedantic \
         -I"$module_root/include" \
         -I"$module_root/src" \
         "$module_root/src/imu_core.c" \
         "$module_root/tests/test_imu_api_contract.c" \
-        -lm \
-        -o "$build_dir/test_imu_api_contract"
+        -lm -pthread \
+        -o "$build_dir/test_imu_api_contract"; then
+        echo "[error] failed to compile test_imu_api_contract"
+        exit 1
+    fi
 
     "$build_dir/test_imu_api_contract" functional
 } | tee "$log_file"

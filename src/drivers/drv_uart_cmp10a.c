@@ -328,9 +328,6 @@ static void cmp10a_free(struct imu_dev *dev)
 
     if (dev->priv_data)
         free(dev->priv_data);
-    if (dev->name)
-        free(dev->name);
-    free(dev);
 }
 
 static const struct imu_ops cmp10a_ops = {

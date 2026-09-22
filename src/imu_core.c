@@ -1,3 +1,7 @@
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+
 /**
  * Copyright (C) 2026 SpacemiT (Hangzhou) Technology Co. Ltd.
  * SPDX-License-Identifier: Apache-2.0
@@ -6,6 +10,9 @@
  * @brief IMU registry, mounting transform, and calibration implementation.
  */
 #include "imu_core.h"
+#include <errno.h>
+#include <poll.h>
+#include <sys/eventfd.h>
 #include <math.h>
 #include <time.h>
 #include <stdlib.h>
@@ -156,11 +163,239 @@ void imu_apply_rotation_and_offset(struct imu_dev *dev, struct imu_data *data)
 
 }
 
+/* Lazy synchronization initialization keeps factory failure paths
+ * independent of pthread resource ownership. The global guard makes the
+ * first-use initialization safe for concurrent API callers; the fast path
+ * uses an acquire load so it stays race-free in the C memory model. */
+static pthread_mutex_t g_prepare_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int prepare_sync(struct imu_dev *dev)
+{
+    int error;
+    if (__atomic_load_n(&dev->sync_initialized, __ATOMIC_ACQUIRE))
+        return 0;
+    pthread_mutex_lock(&g_prepare_lock);
+    if (__atomic_load_n(&dev->sync_initialized, __ATOMIC_ACQUIRE)) {
+        pthread_mutex_unlock(&g_prepare_lock);
+        return 0;
+    }
+    error = pthread_mutex_init(&dev->state_lock, NULL);
+    if (error)
+        goto fail;
+    error = pthread_mutex_init(&dev->io_lock, NULL);
+    if (error) {
+        pthread_mutex_destroy(&dev->state_lock);
+        goto fail;
+    }
+    error = pthread_cond_init(&dev->worker_cond, NULL);
+    if (error) {
+        pthread_mutex_destroy(&dev->io_lock);
+        pthread_mutex_destroy(&dev->state_lock);
+        goto fail;
+    }
+    __atomic_store_n(&dev->sync_initialized, 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_prepare_lock);
+    return 0;
+fail:
+    pthread_mutex_unlock(&g_prepare_lock);
+    return -error;
+}
+
+static void finalize_sample(struct imu_dev *dev, struct imu_data *data)
+{
+    dev->receive_timestamp_us = monotonic_time_us();
+    /* Keep the driver's sample timestamp; a cached sync read must not appear fresh. */
+    imu_apply_rotation_and_offset(dev, data);
+}
+
+/* state_lock is held, and no worker is accessing the event source. */
+static void cleanup_event(struct imu_dev *dev)
+{
+    pthread_mutex_lock(&dev->io_lock);
+    if (dev->event_started)
+        dev->ops->event_stop(dev);
+    dev->event_started = 0;
+    pthread_mutex_unlock(&dev->io_lock);
+    if (dev->stop_fd >= 0)
+        close(dev->stop_fd);
+    dev->stop_fd = -1;
+    dev->event_source.fd = -1;
+}
+
+static void *callback_worker(void *opaque)
+{
+    struct imu_dev *dev = opaque;
+    struct pollfd fds[2] = {
+        {.fd = dev->event_source.fd, .events = dev->event_source.events}, {.fd = dev->stop_fd, .events = POLLIN}};
+    int error = 0;
+    int self_stopped = 0;
+    for (;;) {
+        int ready = poll(fds, 2, -1);
+        struct imu_data data = {0};
+        imu_callback_t callback;
+        void *ctx;
+        if (ready < 0) {
+            if (errno == EINTR)
+                continue;
+            error = -errno;
+            break;
+        }
+        /* Stop wins even when sensor data became ready in the same poll. */
+        if (fds[1].revents)
+            break;
+        if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            error = -EIO;
+            break;
+        }
+        if (!(fds[0].revents & dev->event_source.events))
+            continue;
+        pthread_mutex_lock(&dev->state_lock);
+        if (dev->mode != IMU_MODE_ACTIVE) {
+            pthread_mutex_unlock(&dev->state_lock);
+            break;
+        }
+        pthread_mutex_lock(&dev->io_lock);
+        pthread_mutex_unlock(&dev->state_lock);
+        int result = dev->ops->event_read(dev, &data);
+        if (!result)
+            finalize_sample(dev, &data);
+        pthread_mutex_unlock(&dev->io_lock);
+        if (result == -EAGAIN)
+            continue;
+        if (result) {
+            error = result;
+            break;
+        }
+        pthread_mutex_lock(&dev->state_lock);
+        callback = dev->mode == IMU_MODE_ACTIVE ? dev->cb : NULL;
+        ctx = dev->cb_ctx;
+        pthread_mutex_unlock(&dev->state_lock);
+        if (callback)
+            callback(dev, &data, ctx);
+    }
+    pthread_mutex_lock(&dev->state_lock);
+    if (dev->self_stop) {
+        cleanup_event(dev);
+        dev->mode = IMU_MODE_POLL;
+        /* A self-stopping worker cannot be joined by its own callback. */
+        dev->worker_valid = 0;
+        self_stopped = 1;
+    } else if (dev->mode != IMU_MODE_STOPPING) {
+        dev->callback_error = error ? error : -EIO;
+        dev->mode = IMU_MODE_FAULT;
+        dev->initialized = 0;
+        fprintf(stderr, "imu: %s callback fault (%d); unregister and reinitialize\n", dev->name, dev->callback_error);
+    }
+    dev->worker_exited = 1;
+    pthread_cond_broadcast(&dev->worker_cond);
+    pthread_mutex_unlock(&dev->state_lock);
+    /* Detach last so the worker never touches dev after detaching; imu_free
+     * may destroy the synchronization objects and imu_dev once it observes
+     * worker_valid cleared under state_lock. */
+    if (self_stopped)
+        (void)pthread_detach(pthread_self());
+    return NULL;
+}
+
+/* Caller holds state_lock. Fault/stopping remain exclusive until joined. */
+static int stop_callback(struct imu_dev *dev)
+{
+    dev->cb = NULL;
+    dev->cb_ctx = NULL;
+    if (!dev->worker_valid)
+        return 0;
+    dev->mode = IMU_MODE_STOPPING;
+    if (dev->stop_fd >= 0) {
+        uint64_t wake = 1;
+        while (write(dev->stop_fd, &wake, sizeof(wake)) < 0 && errno == EINTR) {
+        }
+    }
+    if (pthread_equal(pthread_self(), dev->worker)) {
+        dev->self_stop = 1;
+        return 0;
+    }
+    pthread_mutex_unlock(&dev->state_lock);
+    int error = pthread_join(dev->worker, NULL);
+    pthread_mutex_lock(&dev->state_lock);
+    if (error) {
+        while (!dev->worker_exited)
+            (void)pthread_cond_wait(&dev->worker_cond, &dev->state_lock);
+        /* Reclaim an exited thread if join failed because its state changed. */
+        (void)pthread_detach(dev->worker);
+    }
+    if (error)
+        fprintf(stderr, "imu: callback worker join failed (%d)\n", error);
+    dev->worker_valid = 0;
+    dev->self_stop = 0;
+    cleanup_event(dev);
+    dev->mode = IMU_MODE_POLL;
+    return error ? -error : 0;
+}
+
+/* Caller holds state_lock, but not io_lock. */
+static int start_callback(struct imu_dev *dev)
+{
+    int result;
+    if (!dev->ops->event_start || !dev->ops->event_read || !dev->ops->event_stop)
+        return -ENOTSUP;
+    dev->mode = IMU_MODE_STARTING;
+    dev->callback_error = 0;
+    dev->self_stop = 0;
+    dev->worker_exited = 0;
+    pthread_mutex_lock(&dev->io_lock);
+    result = dev->ops->event_start(dev, &dev->event_source);
+    pthread_mutex_unlock(&dev->io_lock);
+    if (result)
+        goto fail;
+    dev->event_started = 1;
+    if (dev->event_source.fd < 0 || !dev->event_source.events) {
+        result = -EINVAL;
+        goto fail;
+    }
+    dev->stop_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (dev->stop_fd < 0) {
+        result = -errno;
+        goto fail;
+    }
+    result = pthread_create(&dev->worker, NULL, callback_worker, dev);
+    if (result) {
+        result = -result;
+        goto fail;
+    }
+    dev->worker_valid = 1;
+    dev->mode = IMU_MODE_ACTIVE;
+    return 0;
+fail:
+    cleanup_event(dev);
+    dev->mode = IMU_MODE_POLL;
+    return result;
+}
+
+static int has_event_ops(const struct imu_dev *dev)
+{
+    return dev->ops->event_start && dev->ops->event_read && dev->ops->event_stop;
+}
+
 int imu_init(struct imu_dev *dev, const struct imu_config *cfg)
 {
     if (!dev || !dev->ops || !dev->ops->init)
         return -1;
-
+    int result = prepare_sync(dev);
+    if (result)
+        return result;
+    pthread_mutex_lock(&dev->state_lock);
+    if (dev->mode != IMU_MODE_POLL || dev->freeing) {
+        pthread_mutex_unlock(&dev->state_lock);
+        return -EBUSY;
+    }
+    if (dev->worker_valid) {
+        result = stop_callback(dev);
+        if (result) {
+            pthread_mutex_unlock(&dev->state_lock);
+            return result;
+        }
+    }
+    pthread_mutex_lock(&dev->io_lock);
     if (cfg) {
         dev->config = *cfg;
     } else {
@@ -171,8 +406,20 @@ int imu_init(struct imu_dev *dev, const struct imu_config *cfg)
         dev->config.mounting_matrix[4] = 1;
         dev->config.mounting_matrix[8] = 1;
     }
-
-    return dev->ops->init(dev);
+    result = dev->ops->init(dev);
+    dev->initialized = result == 0;
+    if (!result)
+        dev->callback_error = 0;
+    pthread_mutex_unlock(&dev->io_lock);
+    if (!result && dev->cb && has_event_ops(dev)) {
+        result = start_callback(dev);
+        if (result) {
+            dev->cb = NULL;
+            dev->cb_ctx = NULL;
+        }
+    }
+    pthread_mutex_unlock(&dev->state_lock);
+    return result;
 }
 
 int imu_read(struct imu_dev *dev, struct imu_data *data)
@@ -181,39 +428,96 @@ int imu_read(struct imu_dev *dev, struct imu_data *data)
 
     if (!dev || !dev->ops || !dev->ops->read)
         return -1;
+    if (!data)
+        return -EINVAL;
 
-    ret = dev->ops->read(dev, data);
-    if (ret == 0) {
-        dev->receive_timestamp_us = monotonic_time_us();
-        imu_apply_rotation_and_offset(dev, data);
+    ret = prepare_sync(dev);
+    if (ret)
+        return ret;
+    pthread_mutex_lock(&dev->state_lock);
+    if (dev->mode != IMU_MODE_POLL || dev->freeing) {
+        pthread_mutex_unlock(&dev->state_lock);
+        return -EBUSY;
     }
-
+    if (dev->callback_error && !dev->initialized) {
+        pthread_mutex_unlock(&dev->state_lock);
+        return -EINVAL;
+    }
+    pthread_mutex_lock(&dev->io_lock);
+    pthread_mutex_unlock(&dev->state_lock);
+    ret = dev->ops->read(dev, data);
+    if (ret == 0)
+        finalize_sample(dev, data);
+    pthread_mutex_unlock(&dev->io_lock);
     return ret;
+}
+
+static int set_callback(struct imu_dev *dev, imu_callback_t callback, void *ctx)
+{
+    int result;
+    if (!dev)
+        return -EINVAL;
+    /* Legacy drivers retain callback storage without starting a core worker. */
+    if (!dev->ops || !has_event_ops(dev)) {
+        dev->cb = callback;
+        dev->cb_ctx = ctx;
+        return 0;
+    }
+    result = prepare_sync(dev);
+    if (result)
+        return result;
+    pthread_mutex_lock(&dev->state_lock);
+    if (dev->freeing || (callback && dev->mode == IMU_MODE_FAULT) ||
+        (callback && dev->worker_valid && pthread_equal(pthread_self(), dev->worker))) {
+        pthread_mutex_unlock(&dev->state_lock);
+        return -EBUSY;
+    }
+    result = stop_callback(dev);
+    if (result == 0) {
+        if (callback) {
+            dev->cb = callback;
+            dev->cb_ctx = ctx;
+            if (dev->initialized)
+                result = start_callback(dev);
+            if (result) {
+                dev->cb = NULL;
+                dev->cb_ctx = NULL;
+            }
+        }
+    }
+    pthread_mutex_unlock(&dev->state_lock);
+    return result;
+}
+
+void imu_set_callback(struct imu_dev *dev, imu_callback_t cb, void *ctx)
+{
+    int result = set_callback(dev, cb, ctx);
+    if (result)
+        fprintf(stderr, "imu: callback registration failed (%d)\n", result);
 }
 
 int imu_get_diagnostics(struct imu_dev *dev,
         struct imu_diagnostics *diagnostics)
 {
-    int ret = 0;
+    int ret;
 
     if (!dev || !diagnostics)
         return -1;
 
+    ret = prepare_sync(dev);
+    if (ret)
+        return ret;
+    pthread_mutex_lock(&dev->io_lock);
     memset(diagnostics, 0, sizeof(*diagnostics));
     if (dev->ops && dev->ops->get_diagnostics)
         ret = dev->ops->get_diagnostics(dev, diagnostics);
-    if (ret < 0)
+    if (ret < 0) {
+        pthread_mutex_unlock(&dev->io_lock);
         return ret;
-    diagnostics->receive_timestamp_us = dev->receive_timestamp_us;
-    return 0;
-}
-
-void imu_set_callback(struct imu_dev *dev, imu_callback_t cb, void *ctx)
-{
-    if (dev) {
-        dev->cb = cb;
-        dev->cb_ctx = ctx;
     }
+    diagnostics->receive_timestamp_us = dev->receive_timestamp_us;
+    pthread_mutex_unlock(&dev->io_lock);
+    return 0;
 }
 
 int imu_calibrate_gyro_bias(struct imu_dev *dev, uint32_t duration_ms)
@@ -227,6 +531,21 @@ int imu_calibrate_gyro_bias(struct imu_dev *dev, uint32_t duration_ms)
 
     if (!dev || !dev->ops || !dev->ops->read)
         return -1;
+
+    int result = prepare_sync(dev);
+    if (result)
+        return result;
+    pthread_mutex_lock(&dev->state_lock);
+    if (dev->mode != IMU_MODE_POLL || dev->freeing) {
+        pthread_mutex_unlock(&dev->state_lock);
+        return -EBUSY;
+    }
+    if (dev->callback_error && !dev->initialized) {
+        pthread_mutex_unlock(&dev->state_lock);
+        return -EINVAL;
+    }
+    pthread_mutex_lock(&dev->io_lock);
+    pthread_mutex_unlock(&dev->state_lock);
 
     samples = (duration_ms * 1000) / delay_us;
     if (samples <= 0)
@@ -254,26 +573,50 @@ int imu_calibrate_gyro_bias(struct imu_dev *dev, uint32_t duration_ms)
         printf("calibration done, offsets: %.4f, %.4f, %.4f\n",
                 dev->config.gyro_offset[0], dev->config.gyro_offset[1],
                 dev->config.gyro_offset[2]);
+        pthread_mutex_unlock(&dev->io_lock);
         return 0;
     }
 
+    pthread_mutex_unlock(&dev->io_lock);
     return -1;
 }
 
 void imu_free(struct imu_dev *dev)
 {
+    char *name;
+    int sync;
+
     if (!dev)
         return;
-
+    sync = __atomic_load_n(&dev->sync_initialized, __ATOMIC_ACQUIRE);
+    if (sync) {
+        pthread_mutex_lock(&dev->state_lock);
+        if (dev->worker_valid && pthread_equal(pthread_self(), dev->worker)) {
+            pthread_mutex_unlock(&dev->state_lock);
+            fprintf(stderr, "imu: imu_free is forbidden inside callback\n");
+            return;
+        }
+        dev->freeing = 1;
+        int result = stop_callback(dev);
+        pthread_mutex_unlock(&dev->state_lock);
+        if (result)
+            fprintf(stderr, "imu: callback worker join failed (%d); continuing cleanup\n", result);
+        /* External callers must stop entering APIs before freeing the device. */
+        pthread_mutex_lock(&dev->io_lock);
+        pthread_mutex_unlock(&dev->io_lock);
+    }
     if (dev->ops && dev->ops->free) {
         dev->ops->free(dev);
-        return;
     }
-
-    if (dev->priv_data)
+    else if (dev->priv_data)
         free(dev->priv_data);
-    if (dev->name)
-        free(dev->name);
+    if (sync) {
+        pthread_mutex_destroy(&dev->io_lock);
+        pthread_mutex_destroy(&dev->state_lock);
+        pthread_cond_destroy(&dev->worker_cond);
+    }
+    name = dev->name;
+    free(name);
     free(dev);
 }
 
@@ -286,6 +629,9 @@ struct imu_dev *imu_dev_alloc(const char *name, size_t priv_size)
     dev = calloc(1, sizeof(*dev));
     if (!dev)
         return NULL;
+
+    dev->stop_fd = -1;
+    dev->event_source.fd = -1;
 
     if (priv_size) {
         priv = calloc(1, priv_size);

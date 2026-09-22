@@ -134,8 +134,6 @@ static void fake_free(struct imu_dev *dev)
 
     g_fake_free_calls++;
     free(dev->priv_data);
-    free(dev->name);
-    free(dev);
 }
 
 static const struct imu_ops fake_ops = {

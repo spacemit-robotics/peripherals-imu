@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(imu LANGUAGES C)
+find_package(Threads REQUIRED)
 
 # Set C standard
 set(CMAKE_C_STANDARD 99)
@@ -50,7 +51,7 @@ set(IMU_SOURCES
 add_library(imu SHARED ${IMU_SOURCES})
 
 # Link math library for trigonometric functions
-target_link_libraries(imu m)
+target_link_libraries(imu m Threads::Threads)
 
 # Set compiler flags
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
