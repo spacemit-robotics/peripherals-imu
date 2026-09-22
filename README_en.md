@@ -15,6 +15,8 @@ The IMU (Inertial Measurement Unit) component provides a unified sensor driver a
 - Configurable sample rate and low-pass filter
 
 **Currently supported drivers:**
+- `drv_uart_iwt603` - IWT603 UART IMU with onboard attitude
+- `drv_spi_bmi270` - BMI270 SPI IMU with optional INT1 GPIO events
 - `drv_uart_cmp10a` - CMP10A UART interface IMU
 - `drv_uart_forsense` - Forsense UART IMU with 54-byte frame decoding, CRC, device timestamps and SI conversion
 - `drv_i2c_mxc4005` - MXC4005 I2C interface accelerometer
@@ -42,7 +44,7 @@ make
 
 ### Usage Example
 
-With `BUILD_TESTS=ON`, the test program `test_imu_uart` is built. Run it directly:
+With `BUILD_TESTS=ON`, the example program `test_imu_uart` is built. Run it directly:
 
 ```bash
 # CMP10A
@@ -130,6 +132,38 @@ elapsed time across a restart.
 ## Detailed Usage
 
 > For detailed API documentation and advanced usage, please refer to the official documentation (TBD).
+
+## Event callbacks
+
+Register with `imu_set_callback()` before `imu_init()` to receive event startup errors
+through initialization. Prepare the callback context before initialization; callbacks may
+start before init returns. Without a callback, reading remains synchronous with no worker.
+The worker waits for device events, not a periodic timer. Drivers without event operations
+retain callback storage without starting a worker; initialization and synchronous reads are unchanged.
+
+Callbacks run without core locks. Copy the sample and return promptly; diagnostics remain
+available. Read, calibration and reinitialization return `-EBUSY` in event mode.
+Unregister with a NULL callback before releasing the context. Self-unregistration is allowed,
+but freeing or re-registering from a callback is not. After a fault, unregister and reinitialize.
+Serialize lifecycle calls and stop external API users before freeing the device.
+Registration after initialization retains the void signature and logs startup failures.
+
+The BMI270 external data-ready GPIO is a BMI270-specific option passed through the existing
+SPI `ex_args` argument:
+
+```c
+#include "imu.h"
+
+struct imu_spi_config bmi_config = {
+    .mode = 0, .bits_per_word = 8, .speed_hz = 1000000,
+    .gpiochip_path = "/dev/gpiochip0",
+    .gpio_line = gpio_line,
+};
+struct imu_dev *dev = imu_alloc_spi("drv_spi_bmi270", "/dev/spidev0.0", 0, &bmi_config);
+```
+
+The GPIO path and line are optional event fields in `imu_spi_config`.
+SPI drivers without event support ignore them and keep the same `ex_args` type.
 
 ## FAQ
 
