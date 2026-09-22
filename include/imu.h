@@ -77,18 +77,13 @@ typedef void (*imu_callback_t)(struct imu_dev *dev,
  * @mode:          SPI mode, default 0
  * @bits_per_word: bits per word, default 8
  * @speed_hz:      SPI clock, default 1000000
+ * @gpiochip_path: optional Linux GPIO chip path for event-capable SPI drivers
+ * @gpio_line:     optional GPIO line offset for event-capable SPI drivers
  */
 struct imu_spi_config {
     uint8_t mode;
     uint8_t bits_per_word;
     uint32_t speed_hz;
-};
-
-/* drv_spi_bmi270 ex_args. Zero initialize; the driver copies the path.
- * NULL gpiochip_path selects synchronous SPI only. gpio_line is a chip offset.
- * INT1 is active-high, push-pull DRDY. No board-specific defaults are assumed. */
-struct bmi270_config {
-    struct imu_spi_config spi;
     const char *gpiochip_path;
     uint32_t gpio_line;
 };
