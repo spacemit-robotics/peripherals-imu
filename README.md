@@ -15,6 +15,9 @@ IMU（惯性测量单元）组件提供统一的传感器驱动抽象层，用�
 - 可配置采样率和低通滤波器
 
 **当前支持的驱动：**
+
+- `drv_uart_iwt603`：IWT603 UART，加速度、角速度与板载融合四元数。
+- `drv_spi_bmi270`：BMI270 SPI，支持可选 INT1 GPIO 事件。
 - `drv_uart_cmp10a` - CMP10A UART 接口 IMU
 - `drv_uart_forsense` - Forsense 54-byte UART 帧 IMU，含 CRC、设备时间戳、SI 单位转换和姿态输出
 - `drv_i2c_mxc4005` - MXC4005 I2C 接口加速度计
@@ -46,7 +49,7 @@ make
 
 ### 运行示例
 
-构建时启用 `BUILD_TESTS=ON` 后会生成测试程序 `test_imu_uart`，可直接运行：
+构建时启用 `BUILD_TESTS=ON` 后会生成示例程序 `test_imu_uart`，可直接运行：
 
 ```bash
 # CMP10A
@@ -133,6 +136,50 @@ ZYX（roll、pitch、yaw）约定。
 ## 详细使用
 
 > 详细 API 文档和高级用法请参考官方文档（待补充）。
+
+
+## 事件回调
+
+未注册回调时使用原有 `imu_read()` 同步路径，不创建后台线程。需要事件模式时，
+先注册回调，再初始化，以便通过 `imu_init()` 获知事件源或线程启动错误：
+
+```c
+#include "imu.h"
+
+imu_set_callback(dev, on_sample, context);
+int result = imu_init(dev, &config);
+/* result 非零时处理启动失败。退出时先注销，再释放上下文和设备。 */
+imu_set_callback(dev, NULL, NULL);
+imu_free(dev);
+```
+
+`imu_set_callback()` 保持 `void` 返回值。初始化后注册失败会记录错误并清除回调；
+需要检查启动结果的调用方应使用上述顺序。回调可能在初始化返回前执行，context 必须提前准备好。
+线程阻塞等待真实设备事件与停止 eventfd，不使用定时器轮询；半帧、无新样本不触发回调。
+回调中的数据已完成与同步读取相同的零偏和安装变换，样本时间戳由驱动提供。
+
+回调执行时不持有 core 锁，可查询 `imu_get_diagnostics()`；应快速复制数据并返回。
+事件模式启动、运行、停止或故障期间，读取、初始化和标定返回 `-EBUSY`。
+注销和释放等待在途回调结束；回调可注销自身，但不能在回调内释放设备或重新注册。
+设备断连后需注销、重新初始化并重新启用事件模式，不自动退回同步模式。
+同一设备的外部生命周期操作由调用方串行执行，释放前停止外部 API 调用。
+
+BMI270 的外部数据就绪 GPIO 配置通过现有 SPI `ex_args` 传入：
+
+```c
+#include "imu.h"
+
+struct imu_spi_config bmi_config = {
+    .mode = 0, .bits_per_word = 8, .speed_hz = 1000000,
+    .gpiochip_path = "/dev/gpiochip0",
+    .gpio_line = gpio_line,
+};
+struct imu_dev *dev = imu_alloc_spi("drv_spi_bmi270", "/dev/spidev0.0", 0, &bmi_config);
+```
+
+GPIO 路径和芯片内线偏移是事件能力的可选 SPI 参数；不使用事件时保持为 NULL/0。
+不支持事件的其他 SPI 驱动忽略这两个字段，继续使用同一个 `imu_spi_config`。
+未实现事件接口的驱动保持原有行为：注册仅保存回调，不启动后台线程，初始化和同步读取不受影响。
 
 ## 常见问题
 

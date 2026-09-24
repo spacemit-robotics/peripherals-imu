@@ -185,9 +185,6 @@ static void mxc4005_free(struct imu_dev *dev)
 
     if (dev->priv_data)
         free(dev->priv_data);
-    if (dev->name)
-        free(dev->name);
-    free(dev);
 }
 
 static const struct imu_ops mxc4005_ops = {
@@ -214,25 +211,25 @@ static struct imu_dev *mxc4005_create(void *args)
 
     if (resolve_device_dir(priv->device_dir, sizeof(priv->device_dir),
             a->dev_path, a->addr) < 0) {
-        mxc4005_free(dev);
+        imu_free(dev);
         return NULL;
     }
 
     if (fill_axis_path(priv->accel_x_path, sizeof(priv->accel_x_path),
             priv->device_dir, "x") < 0) {
-        mxc4005_free(dev);
+        imu_free(dev);
         return NULL;
     }
 
     if (fill_axis_path(priv->accel_y_path, sizeof(priv->accel_y_path),
             priv->device_dir, "y") < 0) {
-        mxc4005_free(dev);
+        imu_free(dev);
         return NULL;
     }
 
     if (fill_axis_path(priv->accel_z_path, sizeof(priv->accel_z_path),
             priv->device_dir, "z") < 0) {
-        mxc4005_free(dev);
+        imu_free(dev);
         return NULL;
     }
 

@@ -589,9 +589,6 @@ static void icm42670p_free(struct imu_dev *dev)
 
     if (dev->priv_data)
         free(dev->priv_data);
-    if (dev->name)
-        free(dev->name);
-    free(dev);
 }
 
 static const struct imu_ops icm42670p_ops = {

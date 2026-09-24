@@ -77,11 +77,15 @@ typedef void (*imu_callback_t)(struct imu_dev *dev,
  * @mode:          SPI mode, default 0
  * @bits_per_word: bits per word, default 8
  * @speed_hz:      SPI clock, default 1000000
+ * @gpiochip_path: optional Linux GPIO chip path for event-capable SPI drivers
+ * @gpio_line:     optional GPIO line offset for event-capable SPI drivers
  */
 struct imu_spi_config {
     uint8_t mode;
     uint8_t bits_per_word;
     uint32_t speed_hz;
+    const char *gpiochip_path;
+    uint32_t gpio_line;
 };
 
 /* --- core API --- */
@@ -89,6 +93,15 @@ struct imu_spi_config {
 int imu_init(struct imu_dev *dev, const struct imu_config *cfg);
 int imu_read(struct imu_dev *dev, struct imu_data *data);
 int imu_get_diagnostics(struct imu_dev *dev, struct imu_diagnostics *diagnostics);
+/* Optional event mode: register before imu_init() to receive startup errors there.
+ * Drivers without event operations retain callback storage and synchronous reading.
+ * Registration after init logs startup failures. No periodic polling is used by core.
+ * Callback runs without core locks; copy data before returning. NULL unregisters
+ * and waits for in-flight callbacks; self-unregister does not join itself.
+ * Do not free/re-register from a callback. Read/init/calibration return -EBUSY
+ * while event mode is starting/active/stopping/faulted; diagnostics remain usable.
+ * Fault recovery requires unregister and reinitialize. Serialize lifecycle calls
+ * and stop external API callers before freeing the device. */
 void imu_set_callback(struct imu_dev *dev, imu_callback_t cb, void *ctx);
 int imu_calibrate_gyro_bias(struct imu_dev *dev, uint32_t duration_ms);
 void imu_free(struct imu_dev *dev);

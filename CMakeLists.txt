@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(imu LANGUAGES C)
+find_package(Threads REQUIRED)
 
 # Set C standard
 set(CMAKE_C_STANDARD 99)
@@ -24,6 +25,8 @@ set(_IMU_AVAILABLE_DRIVERS
     drv_spi_icm42670p
     drv_uart_cmp10a
     drv_uart_forsense
+    drv_uart_iwt603
+    drv_spi_bmi270
 )
 if("${SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS}" STREQUAL "")
     set(_imu_enabled_drivers ${_IMU_AVAILABLE_DRIVERS})
@@ -50,7 +53,7 @@ set(IMU_SOURCES
 add_library(imu SHARED ${IMU_SOURCES})
 
 # Link math library for trigonometric functions
-target_link_libraries(imu m)
+target_link_libraries(imu m Threads::Threads)
 
 # Set compiler flags
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -81,14 +84,20 @@ install(FILES include/imu.h
     DESTINATION include
 )
 
-# Optional: Create test executables
+install(FILES NOTICE.md
+    DESTINATION share/${PROJECT_NAME}
+)
+
+# Optional: Create example executables
 option(BUILD_TESTS "Build test programs" ON)
 
 if(BUILD_TESTS)
     list(FIND _imu_enabled_drivers "drv_uart_cmp10a" _imu_uart_idx)
     list(FIND _imu_enabled_drivers "drv_uart_forsense" _imu_forsense_idx)
-    if(_imu_uart_idx GREATER -1 OR _imu_forsense_idx GREATER -1)
-        add_executable(test_imu_uart test/test_imu_uart.c)
+    list(FIND _imu_enabled_drivers "drv_uart_iwt603" _imu_iwt603_idx)
+    if(_imu_uart_idx GREATER -1 OR _imu_forsense_idx GREATER -1 OR
+        _imu_iwt603_idx GREATER -1)
+        add_executable(test_imu_uart example/test_imu_uart.c)
         target_link_libraries(test_imu_uart imu)
         _imu_set_runtime_rpath(test_imu_uart)
         install(TARGETS test_imu_uart RUNTIME DESTINATION bin)
@@ -96,7 +105,7 @@ if(BUILD_TESTS)
 
     list(FIND _imu_enabled_drivers "drv_i2c_mxc4005" _imu_i2c_idx)
     if(_imu_i2c_idx GREATER -1)
-        add_executable(test_imu_i2c test/test_imu_i2c.c)
+        add_executable(test_imu_i2c example/test_imu_i2c.c)
         target_link_libraries(test_imu_i2c imu)
         _imu_set_runtime_rpath(test_imu_i2c)
         install(TARGETS test_imu_i2c RUNTIME DESTINATION bin)
@@ -104,7 +113,7 @@ if(BUILD_TESTS)
 
     list(FIND _imu_enabled_drivers "drv_spi_icm42670p" _imu_spi_idx)
     if(_imu_spi_idx GREATER -1)
-        add_executable(test_imu_spi test/test_imu_spi.c)
+        add_executable(test_imu_spi example/test_imu_spi.c)
         target_link_libraries(test_imu_spi imu)
         _imu_set_runtime_rpath(test_imu_spi)
         install(TARGETS test_imu_spi RUNTIME DESTINATION bin)
