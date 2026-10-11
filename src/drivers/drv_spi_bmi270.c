@@ -2,6 +2,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "imu_core.h"
 #include <math.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/spi/spidev.h>
@@ -715,9 +716,14 @@ struct bmi270_priv {
     char gpio_path[256];
     int event_fd;
     int fd, initialized;
+    int iio_mode;
     struct imu_spi_config spi;
     uint32_t gpio_line;
     int gyro_cross_zx;
+    float iio_accel_scale;
+    float iio_gyro_scale;
+    float iio_temp_scale;
+    float iio_temp_offset;
     struct bmi270_attitude_estimator attitude;
     uint64_t last_sample_us;
 };
@@ -727,6 +733,102 @@ static uint64_t bmi270_time_us(void)
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+}
+
+static const char *const bmi270_iio_channels[] = {
+    "in_accel_x_raw", "in_accel_y_raw", "in_accel_z_raw",
+    "in_anglvel_x_raw", "in_anglvel_y_raw", "in_anglvel_z_raw", "in_temp_raw",
+};
+
+static int bmi270_iio_attribute(const struct bmi270_priv *p, const char *attribute, char *buffer, size_t size)
+{
+    char path[320];
+    int length = snprintf(path, sizeof(path), "%s/%s", p->path, attribute);
+    if (length < 0 || (size_t)length >= sizeof(path))
+        return -ENAMETOOLONG;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -errno;
+    ssize_t count;
+    do {
+        count = read(fd, buffer, size - 1);
+    } while (count < 0 && errno == EINTR);
+    int error = count < 0 ? errno : 0;
+    close(fd);
+    if (error)
+        return -error;
+    if (count == 0)
+        return -EIO;
+    if ((size_t)count == size - 1)
+        return -EOVERFLOW;
+    buffer[count] = '\0';
+    return 0;
+}
+
+static int bmi270_iio_value(const struct bmi270_priv *p, const char *attribute, int raw, float *value)
+{
+    char buffer[64], *end;
+    int result = bmi270_iio_attribute(p, attribute, buffer, sizeof(buffer));
+    if (result)
+        return result;
+    errno = 0;
+    float parsed = raw ? (float)strtol(buffer, &end, 10) : strtof(buffer, &end);
+    if (errno == ERANGE || (raw && (parsed < INT16_MIN || parsed > INT16_MAX)))
+        return -ERANGE;
+    if (end == buffer || !isfinite(parsed))
+        return -EINVAL;
+    while (isspace((unsigned char)*end))
+        ++end;
+    if (*end)
+        return -EINVAL;
+    *value = parsed;
+    return 0;
+}
+
+static int bmi270_iio_init(struct bmi270_priv *p)
+{
+    const struct {
+        const char *attribute;
+        float *value;
+    } scales[] = {
+        {"in_accel_scale", &p->iio_accel_scale}, {"in_anglvel_scale", &p->iio_gyro_scale},
+        {"in_temp_scale", &p->iio_temp_scale}, {"in_temp_offset", &p->iio_temp_offset},
+    };
+    char name[64];
+    float raw;
+    int result = bmi270_iio_attribute(p, "name", name, sizeof(name));
+    if (result)
+        return result;
+    name[strcspn(name, "\r\n")] = '\0';
+    if (strcmp(name, "bmi270") != 0)
+        return -ENODEV;
+    for (size_t i = 0; i < 6; ++i) {
+        result = bmi270_iio_value(p, bmi270_iio_channels[i], 1, &raw);
+        if (result)
+            return result;
+    }
+    p->iio_temp_scale = 0.0f;
+    p->iio_temp_offset = 0.0f;
+    result = bmi270_iio_value(p, "in_temp_raw", 1, &raw);
+    if (result && result != -ENOENT)
+        return result;
+    size_t count = result == -ENOENT ? 2 : 4;
+    for (size_t i = 0; i < count; ++i) {
+        result = bmi270_iio_value(p, scales[i].attribute, 0, scales[i].value);
+        if (result == -ENOENT && i >= 2) {
+            p->iio_temp_scale = 0.0f;
+            p->iio_temp_offset = 0.0f;
+            break;
+        }
+        if (result)
+            return result;
+        if (i < 3 && *scales[i].value <= 0.0f)
+            return -EINVAL;
+    }
+    bmi270_attitude_init(&p->attitude, 1.0f);
+    p->last_sample_us = 0;
+    p->initialized = 1;
+    return 0;
 }
 
 static void bmi270_delay(uint32_t us, void *ctx)
@@ -793,6 +895,50 @@ static void bmi270_close(struct bmi270_priv *p)
     p->initialized = 0;
 }
 
+static int bmi270_update_attitude(struct imu_dev *dev, struct imu_data *data)
+{
+    struct bmi270_priv *p = dev->priv_data;
+    float corrected_acc[3], corrected_gyro[3];
+    for (size_t axis = 0; axis < 3; ++axis) {
+        corrected_acc[axis] = data->acc[axis] - dev->config.acc_offset[axis];
+        corrected_gyro[axis] = data->gyro[axis] - dev->config.gyro_offset[axis];
+    }
+    if (p->last_sample_us && data->timestamp_us - p->last_sample_us > 50000)
+        bmi270_attitude_reset(&p->attitude);
+    p->last_sample_us = data->timestamp_us;
+    bmi270_attitude_update_acceleration(&p->attitude, corrected_acc, data->timestamp_us);
+    if (!bmi270_attitude_update_angular_velocity(&p->attitude, corrected_gyro, data->timestamp_us))
+        return -EAGAIN;
+    memcpy(data->quat, p->attitude.quaternion_wxyz, sizeof(data->quat));
+    return 0;
+}
+
+static int bmi270_iio_read(struct imu_dev *dev, struct imu_data *data)
+{
+    const struct bmi270_priv *p = dev->priv_data;
+    float raw[7] = {0};
+    size_t count = p->iio_temp_scale != 0.0f ? 7 : 6;
+    for (size_t i = 0; i < count; ++i) {
+        int result = bmi270_iio_value(p, bmi270_iio_channels[i], 1, &raw[i]);
+        if (result)
+            return result;
+    }
+    memset(data, 0, sizeof(*data));
+    data->timestamp_us = bmi270_time_us();
+    for (size_t axis = 0; axis < 3; ++axis) {
+        data->acc[axis] = raw[axis] * p->iio_accel_scale;
+        data->gyro[axis] = raw[axis + 3] * p->iio_gyro_scale;
+        if (!isfinite(data->acc[axis]) || !isfinite(data->gyro[axis]))
+            return -ERANGE;
+    }
+    if (p->iio_temp_scale != 0.0f) {
+        data->temp = (raw[6] + p->iio_temp_offset) * p->iio_temp_scale / 1000.0f;
+        if (!isfinite(data->temp))
+            return -ERANGE;
+    }
+    return bmi270_update_attitude(dev, data);
+}
+
 static int bmi270_driver_init(struct imu_dev *dev)
 {
     struct bmi270_priv *p = dev->priv_data;
@@ -800,8 +946,10 @@ static int bmi270_driver_init(struct imu_dev *dev)
     /* ACC_CONF, ACC_RANGE, GYR_CONF, GYR_RANGE: 200 Hz, +/-16g, +/-2000dps. */
     const uint8_t config[4] = {0xa9, 0x03, 0xe9, 0x00};
     uint8_t actual[4];
-    /* Go2 uses the same 200 Hz stream irrespective of transport. */
+    /* Direct SPI configures 200 Hz; IIO retains the kernel configuration. */
     bmi270_close(p);
+    if (p->iio_mode)
+        return bmi270_iio_init(p);
     p->fd = open(p->path, O_RDWR | O_CLOEXEC);
     if (p->fd < 0)
         return -errno;
@@ -866,9 +1014,10 @@ static int bmi270_driver_read(struct imu_dev *dev, struct imu_data *data)
     struct bmi270_priv *p = dev->priv_data;
     uint8_t raw[12], status = 0;
     uint8_t id = 0;
-    float corrected_gyro[3], corrected_acc[3];
     if (!p->initialized)
         return -ENODEV;
+    if (p->iio_mode)
+        return bmi270_iio_read(dev, data);
     /* An unplugged MISO can return all ones without any SPI ioctl error. */
     if (bmi270_read_regs(p, BMI270_CHIP_ID, &id, 1) || id != 0x24 || bmi270_read_regs(p, BMI270_STATUS, &status, 1))
         return -EIO;
@@ -890,20 +1039,7 @@ static int bmi270_driver_read(struct imu_dev *dev, struct imu_data *data)
         gyro[0] = -32768;
     for (int i = 0; i < 3; ++i)
         data->gyro[i] = gyro[i] * (2000.0f * 0.017453292519943295f / 32768.0f);
-    for (int i = 0; i < 3; ++i) {
-        corrected_gyro[i] = data->gyro[i] - dev->config.gyro_offset[i];
-        corrected_acc[i] = data->acc[i] - dev->config.acc_offset[i];
-    }
-    /* Reset integration history after a gap, retaining sensor calibration.
-     * Both the estimator and core output use the same configured offsets. */
-    if (p->last_sample_us && data->timestamp_us - p->last_sample_us > 50000)
-        bmi270_attitude_reset(&p->attitude);
-    p->last_sample_us = data->timestamp_us;
-    bmi270_attitude_update_acceleration(&p->attitude, corrected_acc, data->timestamp_us);
-    if (!bmi270_attitude_update_angular_velocity(&p->attitude, corrected_gyro, data->timestamp_us))
-        return -EAGAIN;
-    memcpy(data->quat, p->attitude.quaternion_wxyz, sizeof(data->quat));
-    return 0;
+    return bmi270_update_attitude(dev, data);
 }
 
 static void bmi270_event_stop(struct imu_dev *dev)
@@ -921,6 +1057,8 @@ static void bmi270_event_stop(struct imu_dev *dev)
 static int bmi270_event_start(struct imu_dev *dev, struct imu_event_source *source)
 {
     struct bmi270_priv *p = dev->priv_data;
+    if (p->iio_mode)
+        return -ENOTSUP;
     if (!p->gpio_path[0])
         return -ENOTSUP;
     int chip = open(p->gpio_path, O_RDONLY | O_CLOEXEC);
@@ -1012,6 +1150,17 @@ static struct imu_dev *bmi270_create(void *args)
     p->spi = config;
     dev->ops = &bmi270_ops;
     strcpy(p->path, spi->dev_path);
+    const char *prefix = "/dev/iio:device";
+    p->iio_mode = strncmp(spi->dev_path, prefix, strlen(prefix)) == 0;
+    if (p->iio_mode) {
+        const char *number = spi->dev_path + strlen(prefix);
+        int length = snprintf(p->path, sizeof(p->path), "/sys/bus/iio/devices/%s", spi->dev_path + strlen("/dev/"));
+        if (!*number || strspn(number, "0123456789") != strlen(number) ||
+            length < 0 || (size_t)length >= sizeof(p->path)) {
+            imu_free(dev);
+            return NULL;
+        }
+    }
     if (extra && extra->gpiochip_path) {
         if (!extra->gpiochip_path[0] || strlen(extra->gpiochip_path) >= sizeof(p->gpio_path)) {
             imu_free(dev);
