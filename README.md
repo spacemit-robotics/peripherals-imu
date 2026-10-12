@@ -17,7 +17,7 @@ IMU（惯性测量单元）组件提供统一的传感器驱动抽象层，用�
 **当前支持的驱动：**
 
 - `drv_uart_iwt603`：IWT603 UART，加速度、角速度与板载融合四元数。
-- `drv_spi_bmi270`：BMI270 SPI，支持可选 INT1 GPIO 事件。
+- `drv_spi_bmi270`：BMI270 SPI，支持直接 spidev 访问及内核 IIO 访问；直接 SPI 可使用 INT1 GPIO 事件。
 - `drv_uart_cmp10a` - CMP10A UART 接口 IMU
 - `drv_uart_forsense` - Forsense 54-byte UART 帧 IMU，含 CRC、设备时间戳、SI 单位转换和姿态输出
 - `drv_i2c_mxc4005` - MXC4005 I2C 接口加速度计
@@ -118,7 +118,7 @@ imu_free(dev);
 
 `drv_uart_forsense` 读取传感器已配置的数据流，不修改其持久化 ODR；在 Linux 支持的
 串口驱动上会启用低延迟模式，避免 USB-UART 默认缓冲增加反馈年龄。
-`imu_data.timestamp_us` 是传感器采样时间；`imu_get_diagnostics()` 中的
+`imu_data.timestamp_us` 是驱动提供的样本时间戳；BMI270 使用主机读取时间。`imu_get_diagnostics()` 中的
 `receive_timestamp_us` 是 SDK 最近一次成功读取数据时的主机单调时间。该诊断接口还可
 读取累计有效帧、CRC/解码错误、旧帧覆盖和流缓冲重同步统计；不提供解析统计的驱动只
 返回核心维护的接收时间，其余计数为零。
@@ -179,6 +179,10 @@ struct imu_dev *dev = imu_alloc_spi("drv_spi_bmi270", "/dev/spidev0.0", 0, &bmi_
 
 GPIO 路径和芯片内线偏移是事件能力的可选 SPI 参数；不使用事件时保持为 NULL/0。
 不支持事件的其他 SPI 驱动忽略这两个字段，继续使用同一个 `imu_spi_config`。
+
+BMI270 的 IIO 方式仍使用 `imu_alloc_spi()`，设备路径由应用按 `/dev/iio:deviceN` 传入，N 为设备编号。此方式读取 sysfs 属性，采样率和量程由内核配置，仅支持同步读取。
+量程换算系数仅在初始化时读取，运行中变更量程后需重新初始化。温度属性或换算系数缺失时跳过温度读取，`temp` 返回 0，六轴读取不受影响。
+时间戳是主机读取时间，六轴属性不保证来自同一采样帧；姿态融合的读取间隔超过 50ms 时会重置估计器。
 未实现事件接口的驱动保持原有行为：注册仅保存回调，不启动后台线程，初始化和同步读取不受影响。
 
 ## 常见问题
