@@ -20,6 +20,7 @@ IMU（惯性测量单元）组件提供统一的传感器驱动抽象层，用�
 - `drv_spi_bmi270`：BMI270 SPI，支持直接 spidev 访问及内核 IIO 访问；直接 SPI 可使用 INT1 GPIO 事件。
 - `drv_uart_cmp10a` - CMP10A UART 接口 IMU
 - `drv_uart_forsense` - Forsense 54-byte UART 帧 IMU，含 CRC、设备时间戳、SI 单位转换和姿态输出
+- `drv_uart_hi91` - HI91 82-byte UART 帧，只接收已配置的数据流，含 CRC 和采样时间检查
 - `drv_i2c_mxc4005` - MXC4005 I2C 接口加速度计
 - `drv_spi_icm42670p` - ICM-42670-P SPI 接口 6 轴 IMU
 icm42670p支持1.6k、800、400、200、100、50、25、12.5 Hz等固定频率的帧率输出
@@ -41,7 +42,7 @@ icm42670p支持1.6k、800、400、200、100、50、25、12.5 Hz等固定频率�
 cd peripherals-imu
 mkdir build && cd build
 cmake -DBUILD_TESTS=ON \
-  -DSROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS="drv_uart_cmp10a;drv_uart_forsense;drv_spi_icm42670p" ..
+  -DSROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS="drv_uart_cmp10a;drv_uart_forsense;drv_uart_hi91;drv_spi_icm42670p" ..
 make
 ```
 
@@ -57,6 +58,11 @@ make
 
 # Forsense；-m 为传感器到机体的 3x3 旋转矩阵
 ./test_imu_uart -t drv_uart_forsense:forsense_imu \
+  -d /dev/ttyUSB0 -b 460800 -r 100 -n 100 \
+  -m '1,0,0,0,1,0,0,0,1'
+
+# HI91；波特率与传感器配置保持一致
+./test_imu_uart -t drv_uart_hi91:hi91_imu \
   -d /dev/ttyUSB0 -b 460800 -r 100 -n 100 \
   -m '1,0,0,0,1,0,0,0,1'
 ```
@@ -127,6 +133,10 @@ Forsense 将 32 位采样计数扩展为 64 位。重复计数或相邻计数的
 该帧计入 `decode_errors` 并丢弃，不推进输出时间或刷新接收时间；比较基准会更新，
 使设备重启后的正常递增帧能够恢复读取。正常计数回绕保留时间增量；重启或异常间隔
 不作重建，因此扩展时间不能用于计算跨重启的实际经过时间。
+
+`drv_uart_hi91` 读取预先配置的 `0x91` 数据流，不发送传感器配置命令；采样率需在
+传感器端设置。加速度和角速度输出采用 SI 单位，采样时间来自设备毫秒计数。
+重复帧不更新反馈，正常计数回绕保留连续性；计数倒退或复位后需释放并重新创建设备。
 
 `mounting_matrix` 是从传感器坐标系到机体坐标系的行优先旋转矩阵，向量按
 `v_body = R_mount * v_sensor` 变换，姿态按

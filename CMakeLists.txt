@@ -26,6 +26,7 @@ set(_IMU_AVAILABLE_DRIVERS
     drv_uart_cmp10a
     drv_uart_forsense
     drv_uart_iwt603
+    drv_uart_hi91
     drv_spi_bmi270
 )
 if("${SROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS}" STREQUAL "")
@@ -42,6 +43,9 @@ foreach(_drv IN LISTS _imu_enabled_drivers)
         message(FATAL_ERROR "imu: enabled driver '${_drv}' not found at src/drivers/${_drv}.c")
     endif()
 endforeach()
+if("drv_uart_hi91" IN_LIST _imu_enabled_drivers)
+    list(APPEND IMU_DRIVER_SOURCES src/drivers/hi91_parser.c)
+endif()
 
 # All source files
 set(IMU_SOURCES
@@ -92,11 +96,20 @@ install(FILES NOTICE.md
 option(BUILD_TESTS "Build test programs" ON)
 
 if(BUILD_TESTS)
+    enable_testing()
+    if("drv_uart_hi91" IN_LIST _imu_enabled_drivers)
+        add_executable(test_hi91_parser tests/test_hi91_parser.c)
+        target_include_directories(test_hi91_parser PRIVATE src/drivers)
+        target_link_libraries(test_hi91_parser PRIVATE imu m)
+        target_compile_options(test_hi91_parser PRIVATE -UNDEBUG)
+        add_test(NAME hi91_parser COMMAND test_hi91_parser)
+    endif()
     list(FIND _imu_enabled_drivers "drv_uart_cmp10a" _imu_uart_idx)
     list(FIND _imu_enabled_drivers "drv_uart_forsense" _imu_forsense_idx)
     list(FIND _imu_enabled_drivers "drv_uart_iwt603" _imu_iwt603_idx)
+    list(FIND _imu_enabled_drivers "drv_uart_hi91" _imu_hi91_idx)
     if(_imu_uart_idx GREATER -1 OR _imu_forsense_idx GREATER -1 OR
-        _imu_iwt603_idx GREATER -1)
+        _imu_iwt603_idx GREATER -1 OR _imu_hi91_idx GREATER -1)
         add_executable(test_imu_uart example/test_imu_uart.c)
         target_link_libraries(test_imu_uart imu)
         _imu_set_runtime_rpath(test_imu_uart)

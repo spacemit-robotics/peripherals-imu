@@ -19,6 +19,7 @@ The IMU (Inertial Measurement Unit) component provides a unified sensor driver a
 - `drv_spi_bmi270` - BMI270 SPI IMU with optional INT1 GPIO events
 - `drv_uart_cmp10a` - CMP10A UART interface IMU
 - `drv_uart_forsense` - Forsense UART IMU with 54-byte frame decoding, CRC, device timestamps and SI conversion
+- `drv_uart_hi91` - HI91 UART IMU with 82-byte stream decoding, CRC and sample-time checks
 - `drv_i2c_mxc4005` - MXC4005 I2C interface accelerometer
 - `drv_spi_icm42670p` - ICM-42670-P SPI interface 6-axis IMU
 
@@ -38,7 +39,7 @@ Standalone build (without SDK):
 cd peripherals-imu
 mkdir build && cd build
 cmake -DBUILD_TESTS=ON \
-  -DSROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS="drv_uart_cmp10a;drv_uart_forsense;drv_spi_icm42670p" ..
+  -DSROBOTIS_PERIPHERALS_IMU_ENABLED_DRIVERS="drv_uart_cmp10a;drv_uart_forsense;drv_uart_hi91;drv_spi_icm42670p" ..
 make
 ```
 
@@ -52,6 +53,11 @@ With `BUILD_TESTS=ON`, the example program `test_imu_uart` is built. Run it dire
 
 # Forsense; -m is the sensor-to-body matrix
 ./test_imu_uart -t drv_uart_forsense:forsense_imu \
+  -d /dev/ttyUSB0 -b 460800 -r 100 -n 100 \
+  -m '1,0,0,0,1,0,0,0,1'
+
+# HI91; match the baud rate to the sensor configuration
+./test_imu_uart -t drv_uart_hi91:hi91_imu \
   -d /dev/ttyUSB0 -b 460800 -r 100 -n 100 \
   -m '1,0,0,0,1,0,0,0,1'
 ```
@@ -123,6 +129,12 @@ advancing the output or receive timestamp. The comparison baseline is updated so
 samples can recover after a sensor restart. Normal counter wrap preserves elapsed time;
 restart or abnormal gaps are not reconstructed, so the extended time does not measure actual
 elapsed time across a restart.
+
+`drv_uart_hi91` reads a preconfigured `0x91` stream without sending sensor configuration
+commands; set the sample rate on the sensor. Acceleration and angular velocity use SI units,
+and sample time comes from the device millisecond counter. Duplicate frames do not update
+feedback; normal counter wrap preserves continuity. Free and recreate the device after a
+counter reset or backward jump.
 
 `mounting_matrix` is a row-major rotation from sensor frame to body frame. Vectors use
 `v_body = R_mount * v_sensor`, while attitude uses
