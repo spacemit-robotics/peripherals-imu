@@ -717,6 +717,9 @@ struct bmi270_priv {
     int event_fd;
     int fd, initialized;
     int iio_mode;
+    int iio_channel_fds[7];
+    uint64_t iio_sample_interval_us;
+    uint64_t iio_next_read_us;
     struct imu_spi_config spi;
     uint32_t gpio_line;
     int gyro_cross_zx;
@@ -740,21 +743,31 @@ static const char *const bmi270_iio_channels[] = {
     "in_anglvel_x_raw", "in_anglvel_y_raw", "in_anglvel_z_raw", "in_temp_raw",
 };
 
+static void bmi270_close(struct bmi270_priv *p);
+
 static int bmi270_iio_attribute(const struct bmi270_priv *p, const char *attribute, char *buffer, size_t size)
 {
+    int cached_fd = -1;
+    for (size_t i = 0; i < 7; ++i) {
+        if (strcmp(attribute, bmi270_iio_channels[i]) == 0) {
+            cached_fd = p->iio_channel_fds[i];
+            break;
+        }
+    }
     char path[320];
     int length = snprintf(path, sizeof(path), "%s/%s", p->path, attribute);
     if (length < 0 || (size_t)length >= sizeof(path))
         return -ENAMETOOLONG;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = cached_fd >= 0 ? cached_fd : open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         return -errno;
     ssize_t count;
     do {
-        count = read(fd, buffer, size - 1);
+        count = cached_fd >= 0 ? pread(fd, buffer, size - 1, 0) : read(fd, buffer, size - 1);
     } while (count < 0 && errno == EINTR);
     int error = count < 0 ? errno : 0;
-    close(fd);
+    if (cached_fd < 0)
+        close(fd);
     if (error)
         return -error;
     if (count == 0)
@@ -825,8 +838,43 @@ static int bmi270_iio_init(struct bmi270_priv *p)
         if (i < 3 && *scales[i].value <= 0.0f)
             return -EINVAL;
     }
+    const char *const rates[] = {"in_accel_sampling_frequency", "in_anglvel_sampling_frequency"};
+    float fastest_rate = 0.0f;
+    p->iio_sample_interval_us = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        float rate;
+        result = bmi270_iio_value(p, rates[i], 0, &rate);
+        if (result == -ENOENT) {
+            fastest_rate = 0.0f;
+            break;
+        }
+        if (result)
+            return result;
+        if (rate <= 0.0f || rate > 1000000.0f)
+            return -ERANGE;
+        if (rate > fastest_rate)
+            fastest_rate = rate;
+    }
+    if (fastest_rate > 0.0f)
+        p->iio_sample_interval_us = (uint64_t)(1000000.0 / fastest_rate);
+    count = p->iio_temp_scale != 0.0f ? 7 : 6;
+    for (size_t i = 0; i < count; ++i) {
+        char path[320];
+        int length = snprintf(path, sizeof(path), "%s/%s", p->path, bmi270_iio_channels[i]);
+        if (length < 0 || (size_t)length >= sizeof(path)) {
+            bmi270_close(p);
+            return -ENAMETOOLONG;
+        }
+        p->iio_channel_fds[i] = open(path, O_RDONLY | O_CLOEXEC);
+        if (p->iio_channel_fds[i] < 0) {
+            result = -errno;
+            bmi270_close(p);
+            return result;
+        }
+    }
     bmi270_attitude_init(&p->attitude, 1.0f);
     p->last_sample_us = 0;
+    p->iio_next_read_us = 0;
     p->initialized = 1;
     return 0;
 }
@@ -892,6 +940,11 @@ static void bmi270_close(struct bmi270_priv *p)
     if (p->fd >= 0)
         close(p->fd);
     p->fd = -1;
+    for (size_t i = 0; i < 7; ++i) {
+        if (p->iio_channel_fds[i] >= 0)
+            close(p->iio_channel_fds[i]);
+        p->iio_channel_fds[i] = -1;
+    }
     p->initialized = 0;
 }
 
@@ -915,7 +968,14 @@ static int bmi270_update_attitude(struct imu_dev *dev, struct imu_data *data)
 
 static int bmi270_iio_read(struct imu_dev *dev, struct imu_data *data)
 {
-    const struct bmi270_priv *p = dev->priv_data;
+    struct bmi270_priv *p = dev->priv_data;
+    /* Keep the kernel's configured rate; repeated reads between conversions
+     * add SPI/sysfs work without producing a new sensor sample. */
+    uint64_t now = bmi270_time_us();
+    if (now < p->iio_next_read_us)
+        return -EAGAIN;
+    uint64_t next = p->iio_next_read_us + p->iio_sample_interval_us;
+    p->iio_next_read_us = next > now ? next : now + p->iio_sample_interval_us;
     float raw[7] = {0};
     size_t count = p->iio_temp_scale != 0.0f ? 7 : 6;
     for (size_t i = 0; i < count; ++i) {
@@ -1147,6 +1207,9 @@ static struct imu_dev *bmi270_create(void *args)
     struct bmi270_priv *p = dev->priv_data;
     p->fd = -1;
     p->event_fd = -1;
+    for (size_t i = 0; i < 7; ++i) {
+        p->iio_channel_fds[i] = -1;
+    }
     p->spi = config;
     dev->ops = &bmi270_ops;
     strcpy(p->path, spi->dev_path);
